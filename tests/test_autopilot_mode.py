@@ -117,6 +117,61 @@ def test_build_agent_bootstrap_context_surfaces_recent_guard_blocks(monkeypatch)
     assert "block_breaker" in output
 
 
+def test_build_agent_bootstrap_context_surfaces_repo_source_summary(monkeypatch):
+    from tools import autopilot_state as autopilot_state_tool
+
+    fake_state = {
+        "next_action": "hunt_p1",
+        "guard_hint": "",
+        "guard_status": {"tripped_hosts": []},
+        "resume_targets": [],
+        "resume_summary": {"latest_session_summary": {}},
+        "recommended_targets": [],
+        "recent_guard_blocks": [],
+        "repo_source_summary": {
+            "summary_hint": "local_path, secrets=2, ci=1",
+            "source_kind": "local_path",
+            "secret_findings": 2,
+            "ci_findings": 1,
+        },
+    }
+
+    monkeypatch.setattr(autopilot_state_tool, "build_autopilot_state", lambda *args, **kwargs: fake_state)
+
+    output = agent._build_agent_bootstrap_context("target.com", repo_root="/tmp/repo", memory_dir="/tmp/memory")
+
+    assert "Repo source summary: local_path, secrets=2, ci=1" in output
+
+
+def test_build_agent_bootstrap_context_surfaces_pivot_hint(monkeypatch):
+    from tools import autopilot_state as autopilot_state_tool
+
+    fake_state = {
+        "next_action": "hunt_p1",
+        "guard_hint": (
+            "avoid cooling hosts: api.target.com (25.0s); prefer the ready host "
+            "files.target.com via https://files.target.com/download?id=1"
+        ),
+        "guard_status": {"tripped_hosts": [{"host": "api.target.com", "remaining_seconds": 25.0}]},
+        "resume_targets": [],
+        "resume_summary": {"latest_session_summary": {}},
+        "recommended_targets": [],
+        "recent_guard_blocks": [],
+        "repo_source_summary": {
+            "summary_hint": "local_path, secrets=2, ci=0",
+            "secret_findings": 2,
+            "ci_findings": 0,
+        },
+        "pivot_hint": "avoid blocked live API for now; inspect repo source findings first.",
+    }
+
+    monkeypatch.setattr(autopilot_state_tool, "build_autopilot_state", lambda *args, **kwargs: fake_state)
+
+    output = agent._build_agent_bootstrap_context("target.com", repo_root="/tmp/repo", memory_dir="/tmp/memory")
+
+    assert "Pivot hint: avoid blocked live API for now; inspect repo source findings first." in output
+
+
 def test_active_bootstrap_context_only_applies_on_first_step(tmp_path):
     memory = agent.HuntMemory(str(tmp_path / "agent-session.json"))
     memory.bootstrap_context = "resume target: /graphql"

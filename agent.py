@@ -2346,6 +2346,15 @@ def _build_agent_bootstrap_context(
             if details:
                 lines.append(f"- {details}")
 
+    repo_source_summary = state.get("repo_source_summary") or {}
+    repo_source_hint = str(repo_source_summary.get("summary_hint", "") or "").strip()
+    if repo_source_hint:
+        lines.append(f"Repo source summary: {repo_source_hint}")
+
+    pivot_hint = str(state.get("pivot_hint", "") or "").strip()
+    if pivot_hint:
+        lines.append(f"Pivot hint: {pivot_hint}")
+
     resume_targets = [item for item in state.get("resume_targets", []) if item]
     if resume_targets:
         lines.append(f"Resume targets: {', '.join(resume_targets[:3])}")

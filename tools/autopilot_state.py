@@ -6,6 +6,7 @@ autopilot_state.py — combine resume + surface context into one practical state
 import argparse
 import json
 import os
+import re
 import sys
 from urllib.parse import urlparse
 
@@ -187,6 +188,29 @@ def _format_recent_guard_block(item: dict) -> str:
     return endpoint or action
 
 
+def _build_pivot_hint(
+    *,
+    tripped_hosts: list[dict],
+    recent_guard_blocks: list[dict],
+    repo_source_summary: dict,
+) -> str:
+    """Build one short advisory hint from current guard + repo-source signals."""
+    secret_findings = int(repo_source_summary.get("secret_findings", 0) or 0)
+    ci_findings = int(repo_source_summary.get("ci_findings", 0) or 0)
+    has_blocked_surface = bool(tripped_hosts or recent_guard_blocks)
+    has_repo_findings = secret_findings > 0 or ci_findings > 0
+
+    if has_blocked_surface and has_repo_findings:
+        return "avoid blocked live API for now; inspect repo source findings first."
+    if has_blocked_surface:
+        return "avoid retrying the blocked surface now; continue with the next ready target."
+    if secret_findings > 0:
+        return "repo source shows secrets; verify credential usability before widening live probing."
+    if ci_findings > 0:
+        return "repo source shows CI risks; review workflow attack surface before rerunning source hunt."
+    return ""
+
+
 def _has_repo_source_artifacts(repo_root: str, target: str) -> bool:
     return bool(_list_repo_source_artifacts(repo_root, target))
 
@@ -208,6 +232,62 @@ def _list_repo_source_artifacts(repo_root: str, target: str) -> list[str]:
     ]
 
 
+def _load_repo_source_summary(repo_root: str, target: str) -> dict:
+    """Load a compact repo-source summary from existing exposure artifacts."""
+    exposure_dir = os.path.join(repo_root, "findings", target, "exposure")
+    meta_path = os.path.join(exposure_dir, "repo_source_meta.json")
+    summary_path = os.path.join(exposure_dir, "repo_summary.md")
+
+    summary: dict[str, object] = {}
+
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if isinstance(meta, dict):
+                summary["status"] = str(meta.get("status", "") or "")
+                summary["source_kind"] = str(meta.get("source_kind", "") or "")
+                summary["clone_performed"] = bool(meta.get("clone_performed", False))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    summary_text = ""
+    if os.path.isfile(summary_path):
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                summary_text = f.read()
+        except OSError:
+            summary_text = ""
+
+    if summary_text:
+        secret_match = re.search(r"^- Secret findings:\s*(\d+)\s*$", summary_text, re.M)
+        ci_match = re.search(r"^- CI findings:\s*(\d+)\s*$", summary_text, re.M)
+        confirmation_required = "confirmation required before clone" in summary_text.lower()
+
+        if secret_match:
+            summary["secret_findings"] = int(secret_match.group(1))
+        if ci_match:
+            summary["ci_findings"] = int(ci_match.group(1))
+        if confirmation_required and not summary.get("status"):
+            summary["status"] = "confirmation_required"
+
+    status = str(summary.get("status", "") or "").strip()
+    source_kind = str(summary.get("source_kind", "") or "").strip()
+    secret_findings = int(summary.get("secret_findings", 0) or 0)
+    ci_findings = int(summary.get("ci_findings", 0) or 0)
+
+    summary_hint = ""
+    if status == "confirmation_required":
+        summary_hint = "confirmation required before clone"
+    elif source_kind:
+        summary_hint = f"{source_kind}, secrets={secret_findings}, ci={ci_findings}"
+
+    if summary_hint:
+        summary["summary_hint"] = summary_hint
+
+    return summary
+
+
 def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = None) -> dict:
     """Build a practical autopilot bootstrap state for a target."""
     resolved_memory_dir = memory_dir or str(default_memory_dir(repo_root))
@@ -217,6 +297,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     tripped_hosts = [item for item in guard_status.get("hosts", []) if item.get("tripped")]
     repo_source_artifacts = _list_repo_source_artifacts(repo_root, target)
     repo_source_available = bool(repo_source_artifacts)
+    repo_source_summary = _load_repo_source_summary(repo_root, target) if repo_source_available else {}
 
     has_recon = bool(ranked.get("available"))
     has_memory = resume_summary is not None
@@ -247,6 +328,11 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "tripped_hosts": tripped_hosts,
         "settings": guard_status.get("settings", {}),
     }
+    pivot_hint = _build_pivot_hint(
+        tripped_hosts=tripped_hosts,
+        recent_guard_blocks=recent_guard_blocks,
+        repo_source_summary=repo_source_summary,
+    )
 
     return {
         "target": target,
@@ -255,10 +341,12 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "has_memory": has_memory,
         "repo_source_available": repo_source_available,
         "repo_source_artifacts": repo_source_artifacts,
+        "repo_source_summary": repo_source_summary,
         "resume_summary": resume_summary,
         "surface": ranked if has_recon else None,
         "guard_status": guard_state,
         "guard_hint": _build_guard_hint(guard_state, recommended_targets),
+        "pivot_hint": pivot_hint,
         "tech_stack": tech_stack,
         "next_action": next_action,
         "resume_targets": resume_targets,
@@ -272,6 +360,9 @@ def format_autopilot_state(state: dict) -> str:
     summary = state.get("resume_summary") or {}
     latest_session = summary.get("latest_session_summary") or {}
     recent_guard_blocks = state.get("recent_guard_blocks", []) or []
+    repo_source_summary = state.get("repo_source_summary") or {}
+    repo_source_hint = str(repo_source_summary.get("summary_hint", "") or "").strip()
+    pivot_hint = str(state.get("pivot_hint", "") or "").strip()
 
     if not state["has_recon"]:
         lines = [
@@ -286,12 +377,16 @@ def format_autopilot_state(state: dict) -> str:
             lines.append(
                 f"Last session: {int(latest_session.get('findings_count', 0) or 0)} finding(s), tried {tried}"
             )
-        if state.get("repo_source_available"):
+        if repo_source_hint:
+            lines.append(f"Repo source: {repo_source_hint}")
+        elif state.get("repo_source_available"):
             lines.append("Repo source: available — use read_repo_source_summary")
         lines.append(f"Next: {_describe_next_step(state)}")
         guard_hint = str(state.get("guard_hint", "") or "").strip()
         if guard_hint:
             lines.append(f"Guard hint: {guard_hint}")
+        if pivot_hint:
+            lines.append(f"Pivot hint: {pivot_hint}")
         if recent_guard_blocks:
             lines.append("Recent guard blocks:")
             for item in recent_guard_blocks[:3]:
@@ -318,7 +413,11 @@ def format_autopilot_state(state: dict) -> str:
     guard_hint = str(state.get("guard_hint", "") or "").strip()
     if guard_hint:
         lines.append(f"Guard hint: {guard_hint}")
-    if state.get("repo_source_available"):
+    if pivot_hint:
+        lines.append(f"Pivot hint: {pivot_hint}")
+    if repo_source_hint:
+        lines.append(f"Repo source: {repo_source_hint}")
+    elif state.get("repo_source_available"):
         lines.append("Repo source: available — use read_repo_source_summary")
 
     if state["tech_stack"]:

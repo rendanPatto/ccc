@@ -390,6 +390,43 @@ class TestAutopilotState:
         assert "Repo source: available" in output
         assert "read_repo_source_summary" in output
 
+    def test_build_autopilot_state_includes_repo_source_summary(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [Next.js] [1000]\n"
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/graphql\n"
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("")
+        (recon_dir / "js" / "endpoints.txt").write_text("")
+
+        exposure_dir = repo_root / "findings" / "target.com" / "exposure"
+        exposure_dir.mkdir(parents=True)
+        (exposure_dir / "repo_source_meta.json").write_text(
+            '{"status":"ok","source_kind":"local_path","clone_performed":false}\n',
+            encoding="utf-8",
+        )
+        (exposure_dir / "repo_summary.md").write_text(
+            "# Repository Source Hunt Summary\n\n- Secret findings: 2\n- CI findings: 1\n",
+            encoding="utf-8",
+        )
+
+        memory_dir = tmp_path / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        save_target_profile(memory_dir, make_target_profile("target.com", hunt_sessions=1))
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
+
+        assert state["repo_source_summary"]["source_kind"] == "local_path"
+        assert state["repo_source_summary"]["secret_findings"] == 2
+        assert state["repo_source_summary"]["ci_findings"] == 1
+        assert state["repo_source_summary"]["summary_hint"] == "local_path, secrets=2, ci=1"
+
     def test_formats_recent_guard_blocks_section(self):
         output = format_autopilot_state({
             "target": "target.com",
@@ -428,3 +465,113 @@ class TestAutopilotState:
         assert "Recent guard blocks:" in output
         assert "https://api.target.com/graphql" in output
         assert "block_breaker" in output
+
+    def test_format_autopilot_state_shows_repo_source_summary(self):
+        output = format_autopilot_state({
+            "target": "target.com",
+            "has_recon": True,
+            "has_memory": True,
+            "tech_stack": ["next.js"],
+            "next_action": "hunt_p1",
+            "resume_summary": {},
+            "surface": {"stats": {"p1": 1, "p2": 0}},
+            "guard_status": {"tracked_hosts": 0, "tripped_hosts": [], "settings": {}},
+            "guard_hint": "",
+            "repo_source_available": True,
+            "repo_source_summary": {
+                "summary_hint": "local_path, secrets=2, ci=1",
+                "source_kind": "local_path",
+                "secret_findings": 2,
+                "ci_findings": 1,
+            },
+            "resume_targets": [],
+            "recommended_targets": [],
+            "recent_guard_blocks": [],
+        })
+
+        assert "Repo source: local_path, secrets=2, ci=1" in output
+
+    def test_build_autopilot_state_includes_repo_first_pivot_hint_when_blocked_and_repo_findings_exist(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [Next.js,GraphQL] [1000]\n"
+            "https://files.target.com [200] [Files] [nginx] [1000]\n"
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/graphql\nhttps://files.target.com/download?id=1\n"
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("")
+        (recon_dir / "js" / "endpoints.txt").write_text("")
+
+        exposure_dir = repo_root / "findings" / "target.com" / "exposure"
+        exposure_dir.mkdir(parents=True)
+        (exposure_dir / "repo_source_meta.json").write_text(
+            '{"status":"ok","source_kind":"local_path","clone_performed":false}\n',
+            encoding="utf-8",
+        )
+        (exposure_dir / "repo_summary.md").write_text(
+            "# Repository Source Hunt Summary\n\n- Secret findings: 2\n- CI findings: 0\n",
+            encoding="utf-8",
+        )
+
+        memory_dir = tmp_path / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        save_target_profile(memory_dir, make_target_profile(
+            "target.com",
+            tech_stack=["graphql", "next.js"],
+            tested_endpoints=[],
+            untested_endpoints=["/graphql", "/download?id=1"],
+            scope_snapshot={"in_scope": ["target.com", "*.target.com"]},
+            hunt_sessions=1,
+        ))
+        now_ts = time.time()
+        record_request(
+            memory_dir=memory_dir,
+            target="target.com",
+            url="https://api.target.com/graphql",
+            method="GET",
+            response_status=429,
+            breaker_threshold=1,
+            breaker_cooldown=30,
+            now_ts=now_ts,
+        )
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
+
+        assert state["pivot_hint"] == "avoid blocked live API for now; inspect repo source findings first."
+
+    def test_format_autopilot_state_shows_pivot_hint(self):
+        output = format_autopilot_state({
+            "target": "target.com",
+            "has_recon": True,
+            "has_memory": True,
+            "tech_stack": ["next.js"],
+            "next_action": "hunt_p1",
+            "resume_summary": {},
+            "surface": {"stats": {"p1": 1, "p2": 0}},
+            "guard_status": {
+                "tracked_hosts": 1,
+                "tripped_hosts": [{"host": "api.target.com", "remaining_seconds": 20.0}],
+                "settings": {},
+            },
+            "guard_hint": (
+                "avoid cooling hosts: api.target.com (20.0s); prefer the ready host "
+                "files.target.com via https://files.target.com/download?id=1"
+            ),
+            "repo_source_available": True,
+            "repo_source_summary": {
+                "summary_hint": "local_path, secrets=2, ci=0",
+                "secret_findings": 2,
+                "ci_findings": 0,
+            },
+            "resume_targets": [],
+            "recommended_targets": [],
+            "recent_guard_blocks": [],
+            "pivot_hint": "avoid blocked live API for now; inspect repo source findings first.",
+        })
+
+        assert "Pivot hint: avoid blocked live API for now; inspect repo source findings first." in output
