@@ -67,6 +67,56 @@ def test_build_agent_bootstrap_context_surfaces_guard_guidance(monkeypatch):
     assert "Top ready target: https://files.target.com/download?id=1 (idor checks)" in output
 
 
+def test_build_agent_bootstrap_context_surfaces_recent_guard_blocks(monkeypatch):
+    from tools import autopilot_state as autopilot_state_tool
+
+    fake_state = {
+        "next_action": "hunt_p1",
+        "guard_hint": (
+            "avoid cooling hosts: api.target.com (25.0s); prefer the ready host "
+            "files.target.com via https://files.target.com/download?id=1"
+        ),
+        "guard_status": {
+            "tripped_hosts": [
+                {"host": "api.target.com", "remaining_seconds": 25.0},
+            ]
+        },
+        "resume_targets": ["/graphql"],
+        "resume_summary": {
+            "latest_session_summary": {
+                "vuln_classes": ["idor"],
+                "findings_count": 1,
+            }
+        },
+        "recommended_targets": [
+            {
+                "url": "https://files.target.com/download?id=1",
+                "suggested": "idor checks",
+                "tripped": False,
+            }
+        ],
+        "recent_guard_blocks": [
+            {
+                "action": "hunt",
+                "endpoint": "https://api.target.com/graphql",
+                "notes": (
+                    "request_guard blocked GET https://api.target.com/graphql. "
+                    "Host: api.target.com. Action: block_breaker. "
+                    "Reason: circuit breaker active."
+                ),
+            }
+        ],
+    }
+
+    monkeypatch.setattr(autopilot_state_tool, "build_autopilot_state", lambda *args, **kwargs: fake_state)
+
+    output = agent._build_agent_bootstrap_context("target.com", repo_root="/tmp/repo", memory_dir="/tmp/memory")
+
+    assert "Recent guard blocks:" in output
+    assert "https://api.target.com/graphql" in output
+    assert "block_breaker" in output
+
+
 def test_active_bootstrap_context_only_applies_on_first_step(tmp_path):
     memory = agent.HuntMemory(str(tmp_path / "agent-session.json"))
     memory.bootstrap_context = "resume target: /graphql"

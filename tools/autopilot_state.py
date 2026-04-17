@@ -175,6 +175,18 @@ def _build_guard_hint(guard_status: dict, recommended_targets: list[dict]) -> st
     return ""
 
 
+def _format_recent_guard_block(item: dict) -> str:
+    """Render a compact human-readable summary for one recent guard block."""
+    notes = str(item.get("notes", "") or "").strip()
+    if notes:
+        return notes
+    endpoint = str(item.get("endpoint", "") or "").strip()
+    action = str(item.get("action", "") or "").strip()
+    if action and endpoint:
+        return f"{action} :: {endpoint}"
+    return endpoint or action
+
+
 def _has_repo_source_artifacts(repo_root: str, target: str) -> bool:
     return bool(_list_repo_source_artifacts(repo_root, target))
 
@@ -209,6 +221,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
     has_recon = bool(ranked.get("available"))
     has_memory = resume_summary is not None
     resume_targets = _build_resume_targets(resume_summary)
+    recent_guard_blocks = list((resume_summary or {}).get("recent_guard_blocks", []) or [])
 
     tech_stack = []
     if resume_summary and resume_summary.get("tech_stack"):
@@ -250,6 +263,7 @@ def build_autopilot_state(repo_root: str, target: str, memory_dir: str | None = 
         "next_action": next_action,
         "resume_targets": resume_targets,
         "recommended_targets": recommended_targets,
+        "recent_guard_blocks": recent_guard_blocks[:3],
     }
 
 
@@ -257,6 +271,7 @@ def format_autopilot_state(state: dict) -> str:
     """Format autopilot bootstrap state for terminal display."""
     summary = state.get("resume_summary") or {}
     latest_session = summary.get("latest_session_summary") or {}
+    recent_guard_blocks = state.get("recent_guard_blocks", []) or []
 
     if not state["has_recon"]:
         lines = [
@@ -277,6 +292,12 @@ def format_autopilot_state(state: dict) -> str:
         guard_hint = str(state.get("guard_hint", "") or "").strip()
         if guard_hint:
             lines.append(f"Guard hint: {guard_hint}")
+        if recent_guard_blocks:
+            lines.append("Recent guard blocks:")
+            for item in recent_guard_blocks[:3]:
+                details = _format_recent_guard_block(item)
+                if details:
+                    lines.append(f"- {details}")
         return "\n".join(lines) + "\n"
 
     surface = state["surface"] or {}
@@ -328,6 +349,14 @@ def format_autopilot_state(state: dict) -> str:
             lines.append(
                 f"- {item['host']} ({item['remaining_seconds']:.1f}s remaining)"
             )
+
+    if recent_guard_blocks:
+        lines.append("")
+        lines.append("Recent guard blocks:")
+        for item in recent_guard_blocks[:3]:
+            details = _format_recent_guard_block(item)
+            if details:
+                lines.append(f"- {details}")
 
     if state["recommended_targets"]:
         lines.append("")

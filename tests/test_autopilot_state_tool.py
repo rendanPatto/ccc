@@ -4,7 +4,7 @@ import time
 
 from memory.hunt_journal import HuntJournal
 from memory.pattern_db import PatternDB
-from memory.schemas import make_pattern_entry
+from memory.schemas import make_journal_entry, make_pattern_entry
 from memory.target_profile import make_target_profile, save_target_profile
 from autopilot_state import _build_recommended_targets, build_autopilot_state, format_autopilot_state
 from request_guard import record_request
@@ -306,6 +306,53 @@ class TestAutopilotState:
         assert "Guard hint:" in output
         assert "files.target.com" in output
 
+    def test_build_autopilot_state_includes_recent_guard_blocks(self, tmp_path):
+        repo_root = tmp_path
+        recon_dir = repo_root / "recon" / "target.com"
+        (recon_dir / "live").mkdir(parents=True)
+        (recon_dir / "urls").mkdir(parents=True)
+        (recon_dir / "js").mkdir(parents=True)
+        (recon_dir / "live" / "httpx_full.txt").write_text(
+            "https://api.target.com [200] [API] [Next.js] [1000]\n"
+        )
+        (recon_dir / "urls" / "api_endpoints.txt").write_text(
+            "https://api.target.com/graphql\n"
+        )
+        (recon_dir / "urls" / "with_params.txt").write_text("")
+        (recon_dir / "js" / "endpoints.txt").write_text("")
+
+        memory_dir = tmp_path / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        save_target_profile(memory_dir, make_target_profile(
+            "target.com",
+            tech_stack=["graphql"],
+            tested_endpoints=[],
+            untested_endpoints=["/graphql"],
+            scope_snapshot={"in_scope": ["target.com", "*.target.com"]},
+            hunt_sessions=1,
+        ))
+        HuntJournal(memory_dir / "journal.jsonl").append(make_journal_entry(
+            target="target.com",
+            action="hunt",
+            vuln_class="guard_block",
+            endpoint="https://api.target.com/graphql",
+            result="informational",
+            severity="none",
+            technique="request_guard",
+            notes=(
+                "request_guard blocked GET https://api.target.com/graphql. "
+                "Host: api.target.com. Action: block_breaker. "
+                "Reason: circuit breaker active."
+            ),
+            tags=["guard_block", "auto_logged", "block_breaker"],
+        ))
+
+        state = build_autopilot_state(str(repo_root), "target.com", memory_dir=str(memory_dir))
+
+        assert len(state["recent_guard_blocks"]) == 1
+        assert state["recent_guard_blocks"][0]["endpoint"] == "https://api.target.com/graphql"
+        assert "block_breaker" in state["recent_guard_blocks"][0]["notes"]
+
     def test_includes_repo_source_hint_when_artifacts_exist(self, tmp_path):
         repo_root = tmp_path
         recon_dir = repo_root / "recon" / "target.com"
@@ -342,3 +389,42 @@ class TestAutopilotState:
         assert state["repo_source_artifacts"] == ["repo_source_meta.json", "repo_summary.md"]
         assert "Repo source: available" in output
         assert "read_repo_source_summary" in output
+
+    def test_formats_recent_guard_blocks_section(self):
+        output = format_autopilot_state({
+            "target": "target.com",
+            "has_recon": True,
+            "has_memory": True,
+            "tech_stack": ["next.js"],
+            "next_action": "hunt_p1",
+            "resume_summary": {},
+            "surface": {"stats": {"p1": 1, "p2": 0}},
+            "guard_status": {"tracked_hosts": 1, "tripped_hosts": [], "settings": {}},
+            "guard_hint": "prefer the ready host files.target.com via https://files.target.com/download?id=1",
+            "repo_source_available": False,
+            "resume_targets": [],
+            "recommended_targets": [
+                {
+                    "url": "https://files.target.com/download?id=1",
+                    "suggested": "idor checks",
+                    "score": 9,
+                    "tripped": False,
+                    "remaining_seconds": 0.0,
+                }
+            ],
+            "recent_guard_blocks": [
+                {
+                    "action": "hunt",
+                    "endpoint": "https://api.target.com/graphql",
+                    "notes": (
+                        "request_guard blocked GET https://api.target.com/graphql. "
+                        "Host: api.target.com. Action: block_breaker. "
+                        "Reason: circuit breaker active."
+                    ),
+                }
+            ],
+        })
+
+        assert "Recent guard blocks:" in output
+        assert "https://api.target.com/graphql" in output
+        assert "block_breaker" in output

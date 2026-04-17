@@ -2338,6 +2338,14 @@ def _build_agent_bootstrap_context(
         )
         lines.append(f"Avoid now: {blocked}")
 
+    recent_guard_blocks = state.get("recent_guard_blocks", []) or []
+    if recent_guard_blocks:
+        lines.append("Recent guard blocks:")
+        for item in recent_guard_blocks[:3]:
+            details = str(item.get("notes", "") or item.get("endpoint", "") or "").strip()
+            if details:
+                lines.append(f"- {details}")
+
     resume_targets = [item for item in state.get("resume_targets", []) if item]
     if resume_targets:
         lines.append(f"Resume targets: {', '.join(resume_targets[:3])}")
