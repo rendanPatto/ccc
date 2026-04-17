@@ -2,8 +2,10 @@
 
 import json
 import os
+import sys
 import pytest
 
+import intel_engine
 from intel_engine import load_memory_context, prioritize_intel
 
 
@@ -189,3 +191,98 @@ class TestPrioritizeIntel:
         memory = {"tested_cves": [], "tested_endpoints": [], "patterns": []}
         intel = prioritize_intel(results, memory)
         assert intel["total"] == 3
+
+
+class TestStandaloneTechResolution:
+
+    def test_main_uses_memory_tech_when_cli_missing(self, memory_dir, monkeypatch, capsys):
+        captured = {}
+
+        def fake_fetch(techs, target, program=""):
+            captured["techs"] = list(techs)
+            captured["target"] = target
+            return []
+
+        monkeypatch.setattr(intel_engine, "fetch_all_intel", fake_fetch)
+        monkeypatch.setattr(
+            intel_engine,
+            "prioritize_intel",
+            lambda results, memory: {
+                "critical": [],
+                "high": [],
+                "info": [],
+                "memory_context": {"tech_stack": memory.get("tech_stack", [])},
+                "total": len(results),
+            },
+        )
+        monkeypatch.setattr(intel_engine, "format_output", lambda target, intel: f"OK:{target}")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["intel_engine.py", "--target", "target.com", "--memory-dir", str(memory_dir)],
+        )
+
+        intel_engine.main()
+
+        out = capsys.readouterr().out
+        assert captured["target"] == "target.com"
+        assert captured["techs"] == ["nextjs", "graphql", "postgresql"]
+        assert "Tech:" in out
+
+    def test_main_uses_recon_tech_when_memory_empty(self, tmp_path, monkeypatch, capsys):
+        captured = {}
+        memory_dir = tmp_path / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        recon_file = tmp_path / "recon" / "target.com" / "live" / "httpx_full.txt"
+        recon_file.parent.mkdir(parents=True)
+        recon_file.write_text(
+            "https://target.com [200] [Target] [nextjs,graphql,cloudflare]\n",
+            encoding="utf-8",
+        )
+
+        def fake_fetch(techs, target, program=""):
+            captured["techs"] = list(techs)
+            return []
+
+        monkeypatch.setattr(intel_engine, "fetch_all_intel", fake_fetch)
+        monkeypatch.setattr(
+            intel_engine,
+            "prioritize_intel",
+            lambda results, memory: {
+                "critical": [],
+                "high": [],
+                "info": [],
+                "memory_context": {"tech_stack": memory.get("tech_stack", [])},
+                "total": len(results),
+            },
+        )
+        monkeypatch.setattr(intel_engine, "format_output", lambda target, intel: f"OK:{target}")
+        monkeypatch.setattr(intel_engine, "REPO_ROOT", str(tmp_path), raising=False)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["intel_engine.py", "--target", "target.com", "--memory-dir", str(memory_dir)],
+        )
+
+        intel_engine.main()
+
+        out = capsys.readouterr().out
+        assert captured["techs"] == ["nextjs", "graphql", "cloudflare"]
+        assert "Tech:" in out
+
+    def test_main_exits_when_no_tech_available(self, tmp_path, monkeypatch, capsys):
+        memory_dir = tmp_path / "hunt-memory"
+        (memory_dir / "targets").mkdir(parents=True)
+        monkeypatch.setattr(intel_engine, "REPO_ROOT", str(tmp_path), raising=False)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["intel_engine.py", "--target", "target.com", "--memory-dir", str(memory_dir)],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            intel_engine.main()
+
+        out = capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "No tech stack specified" in out

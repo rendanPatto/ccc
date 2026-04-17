@@ -6,6 +6,10 @@ description: Validate a finding — runs 7-Question Gate + 4-gate checklist. Kil
 
 Run full validation on the current finding before writing a report.
 
+## CTF Mode
+
+When `ctf_mode: true` is set in `config.json`, Gate 2 scope validation is skipped automatically.
+
 ## What This Does
 
 1. Runs 7-Question Gate (one wrong answer = kill it)

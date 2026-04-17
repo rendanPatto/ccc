@@ -6,6 +6,10 @@ description: Start hunting on a target — loads scope, reads disclosed reports,
 
 Active vulnerability hunting on a target.
 
+## CTF Mode
+
+When `ctf_mode: true` is set in config.json, **Phase 1 (Read Before Touching) is SKIPPED**. Go directly to Phase 2 — all targets are considered in-scope, including localhost/IP lab targets, and helper request guards run in audit-only mode.
+
 ## What This Does
 
 1. Reads program scope (in-scope assets, exclusions, payment behavior)
@@ -21,7 +25,7 @@ Active vulnerability hunting on a target.
 /hunt target.com --vuln-class idor
 /hunt target.com --vuln-class ssrf
 /hunt target.com --vuln-class graphql
-/hunt target.com --source-code   (if repo is available)
+/source-hunt target.com --repo-url https://github.com/org/repo
 ```
 
 ## Phase 1: Read Before Touching (15 min)
@@ -70,6 +74,64 @@ curl -sI https://$TARGET | grep -iE "server|x-powered-by|x-aspnet|x-runtime|x-ge
 # GraphQL        → introspection, IDOR via node(), auth bypass on mutations
 ```
 
+## Phase 2.5: API-Focused Lane (10 min)
+
+If the target exposes REST, GraphQL, SOAP, or mobile APIs, run this lane before
+going deep on a single endpoint.
+
+### Step 1: Map the API Surface
+
+```bash
+TARGET="target.com"
+
+# Recon outputs
+grep -E "/api/|/v1/|/v2/|/v3/|/graphql|/rest/" "recon/$TARGET/urls.txt" | head -50
+
+# Common API docs
+for path in /swagger.json /openapi.json /api-docs /v1/api-docs /swagger-ui.html; do
+  curl -sk "https://$TARGET$path" -o /dev/null -w "$path -> %{http_code}\n"
+done
+```
+
+### Step 2: Split Auth Lanes
+
+Check each lane independently — don't assume the same controls:
+
+```text
+1. Web API vs mobile API
+2. /api/v1 vs /api/v2 vs /api/v3
+3. Standard login vs magic link vs admin/internal login
+4. Browser flow vs direct API call without the frontend
+```
+
+### Step 3: Run Object/Auth Diff Tests
+
+```text
+1. Replay attacker token with victim IDs
+2. Test the same path with GET / POST / PUT / PATCH / DELETE
+3. Add duplicate params: ?user_id=attacker&user_id=victim
+4. Try JSON wrapping: {"id":123} -> {"id":[123]} -> {"id":{"id":123}}
+5. Compare web response vs mobile API response for the same object
+```
+
+### Step 4: Switch Transport Assumptions
+
+```text
+1. Content-Type: JSON -> XML -> form-urlencoded
+2. GraphQL: introspection -> node(id) -> mutation auth -> batching
+3. REST: same endpoint, different verb
+4. File / URL / callback style params inside JSON bodies
+```
+
+### Quick Priority Matrix
+
+| Surface | First check |
+|---|---|
+| REST JSON API | IDOR + method diff + version diff |
+| GraphQL | introspection + `node(id)` + mutation auth |
+| Mobile API | old versions + weaker auth + hidden routes |
+| Swagger/OpenAPI | undocumented admin/debug/export endpoints |
+
 ## Phase 3: Active Testing
 
 ### IDOR Testing (highest ROI)
@@ -96,14 +158,29 @@ curl -X DELETE https://target.com/api/user/123/orders \
 
 ```bash
 # Check all siblings — if 9 have auth, find the 1 that doesn't:
+CURL_BIN="$(command -v curl 2>/dev/null || true)"
+if [ -z "$CURL_BIN" ]; then
+  for p in /usr/local/bin/curl /usr/bin/curl /bin/curl; do
+    if [ -x "$p" ]; then
+      CURL_BIN="$p"
+      break
+    fi
+  done
+fi
+
+if [ -z "$CURL_BIN" ]; then
+  echo "curl not found" >&2
+  exit 1
+fi
+
 for endpoint in export delete share archive download restore transfer admin; do
-  curl -s -o /dev/null -w "$endpoint: %{http_code}\n" \
+  "$CURL_BIN" -s -o /dev/null -w "$endpoint: %{http_code}\n" \
     "https://target.com/api/users/123/$endpoint" \
     -H "Authorization: Bearer ATTACKER_TOKEN"
 done
 
 # Remove auth entirely:
-curl -s "https://target.com/api/users/123/profile"  # no auth header
+"$CURL_BIN" -s "https://target.com/api/users/123/profile"  # no auth header
 ```
 
 ### SSRF Testing

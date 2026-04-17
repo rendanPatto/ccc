@@ -29,3 +29,4 @@ venv/
 # Tool output
 *.out
 nmap-output/
+.ace-tool/

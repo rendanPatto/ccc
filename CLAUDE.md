@@ -18,12 +18,13 @@ This repo is a Claude Code plugin for professional bug bounty hunting across Hac
 | `skills/report-writing/` | H1/Bugcrowd/Intigriti/Immunefi report templates, CVSS 3.1, human tone |
 | `skills/triage-validation/` | 7-Question Gate, 4 gates, never-submit list, conditionally valid table |
 
-### Commands (14 slash commands)
+### Commands (15 slash commands)
 
 | Command | Usage |
 |---|---|
 | `/recon` | `/recon target.com` — full recon pipeline |
 | `/hunt` | `/hunt target.com` — start hunting |
+| `/source-hunt` | `/source-hunt target.com --repo-path /path/to/repo` — scan source repo for secrets + CI risks |
 | `/validate` | `/validate` — run 7-Question Gate on current finding |
 | `/report` | `/report` — write submission-ready report |
 | `/chain` | `/chain` — build A→B→C exploit chain |
@@ -91,6 +92,21 @@ claude
 
 ```bash
 chmod +x install.sh && ./install.sh
+```
+
+## Repo-Local Runtime
+
+Launch Claude Code from this repository root. The installed slash commands
+reference local `tools/`, `memory/`, and optional `config.json`.
+
+```bash
+cp config.example.json config.json
+# set "ctf_mode": true for CTF / lab / local targets
+# ctf_mode disables scope/request-guard restrictions; audit logging still stays on
+
+claude
+# /source-hunt target.com --repo-path /path/to/repo
+# /autopilot target.com --normal
 ```
 
 ## Critical Rules (Always Active)

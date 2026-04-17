@@ -16,7 +16,11 @@ import ssl
 import sys
 import urllib.request
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # macOS: Python may not have system SSL certs. Use unverified context for API queries.
 _SSL_CTX = ssl.create_default_context()
@@ -96,6 +100,20 @@ def severity_from_score(score: float) -> str:
     if score < 7.0:   return "MEDIUM"
     if score < 9.0:   return "HIGH"
     return "CRITICAL"
+
+
+def load_config() -> dict:
+    """Load optional repo config.json. Missing or invalid config is ignored."""
+    config_path = Path(__file__).resolve().parent.parent / "config.json"
+    if not config_path.exists():
+        return {}
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 # ─── HackerOne dup check ──────────────────────────────────────────────────────
@@ -221,8 +239,18 @@ def gate1_is_real() -> tuple[bool, dict]:
     return passed, notes
 
 
-def gate2_in_scope(program_handle: str) -> tuple[bool, dict]:
+def gate2_in_scope(program_handle: str, skip_scope: bool = False) -> tuple[bool, dict]:
     gate_header(2, "Is It In Scope?")
+    if skip_scope:
+        print("  CTF mode enabled — skipping program scope validation.")
+        print(f"\n  {GREEN}GATE 2 PASS (SKIPPED IN CTF MODE){RESET}")
+        return True, {
+            "asset_in_scope": True,
+            "not_excluded": True,
+            "version_ok": True,
+            "skipped_in_ctf_mode": True,
+        }
+
     print("  Check the program scope page explicitly — don't assume.")
     print()
 
@@ -503,6 +531,49 @@ Example: In `path/to/file.ts`, the `functionName` function should verify
 """
 
 
+def derive_validate_target(program_handle: str, endpoint: str) -> str:
+    """Prefer endpoint host when available, otherwise fall back to program handle."""
+    raw_endpoint = (endpoint or "").strip()
+    if raw_endpoint.startswith(("http://", "https://")):
+        parsed = urlparse(raw_endpoint)
+        if parsed.netloc:
+            return parsed.netloc.lower()
+    return (program_handle or "unknown").strip()
+
+
+def build_validation_summary(info: dict, *, all_pass: bool, report_path: str | Path) -> dict:
+    """Build a compact JSON summary that /remember can import later."""
+    vuln_class = (info.get("vuln_type") or "").strip().lower()
+    severity = severity_from_score(float(info.get("cvss_score", 0.0) or 0.0)).lower()
+    return {
+        "target": derive_validate_target(info.get("target", ""), info.get("endpoint", "")),
+        "program": (info.get("target") or "").strip(),
+        "endpoint": (info.get("endpoint") or "").strip(),
+        "vuln_class": vuln_class,
+        "result": "confirmed" if all_pass else "partial",
+        "severity": severity,
+        "notes": (info.get("impact") or "").strip(),
+        "impact": (info.get("impact") or "").strip(),
+        "cvss_score": float(info.get("cvss_score", 0.0) or 0.0),
+        "cvss_vector": info.get("cvss_vector", ""),
+        "all_gates_passed": bool(all_pass),
+        "report_path": str(report_path),
+        "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def write_validation_summary(summary: dict, report_path: str | Path) -> None:
+    """Persist per-report summary and repo-global last-validate pointer."""
+    report_path = Path(report_path)
+    report_summary_path = report_path.parent / "validation-summary.json"
+    report_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    report_summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    last_validate_path = BASE_DIR / "findings" / "last-validate.json"
+    last_validate_path.parent.mkdir(parents=True, exist_ok=True)
+    last_validate_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -517,6 +588,11 @@ def main():
     print(f"\nThis will walk you through the 4 validation gates,")
     print(f"calculate your CVSS score, and generate a report skeleton.\n")
 
+    config = load_config()
+    ctf_mode = bool(config.get("ctf_mode", False))
+    if ctf_mode:
+        print(f"{YELLOW}CTF mode enabled:{RESET} scope validation is skipped in Gate 2.\n")
+
     # Collect basic info upfront
     section("Target Information")
     target_program = args.program or ask("HackerOne program handle (e.g., 'target-program')", "unknown")
@@ -525,7 +601,7 @@ def main():
 
     # Run the 4 gates
     g1_pass, g1_notes = gate1_is_real()
-    g2_pass, g2_notes = gate2_in_scope(target_program)
+    g2_pass, g2_notes = gate2_in_scope(target_program, skip_scope=ctf_mode)
     g3_pass, g3_notes = gate3_exploitable()
     g4_pass, g4_notes = gate4_not_dup(vuln_type, endpoint, target_program)
 
@@ -585,7 +661,7 @@ def main():
         safe_name = vuln_type.lower().replace(" ", "-").replace("/", "-")
         safe_target = target_program.replace(" ", "-")
         base_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            str(BASE_DIR),
             "findings", f"{safe_target}-{safe_name}"
         )
         os.makedirs(base_dir, exist_ok=True)
@@ -593,6 +669,9 @@ def main():
 
     with open(output_path, "w") as f:
         f.write(skeleton)
+
+    summary = build_validation_summary(info, all_pass=all_pass, report_path=output_path)
+    write_validation_summary(summary, output_path)
 
     print(f"  {BOLD}{GREEN}Report skeleton generated:{RESET} {output_path}")
     print(f"\n  {BOLD}Next steps:{RESET}")

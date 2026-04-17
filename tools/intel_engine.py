@@ -14,11 +14,13 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
 # Import learn.py functions (same repo)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
 
 from learn import fetch_github_advisories, fetch_nvd_cves, severity_order
@@ -117,6 +119,56 @@ def load_memory_context(memory_dir: str, target: str) -> dict:
             pass
 
     return context
+
+
+def dedupe_tech_stack(items: list[str]) -> list[str]:
+    """Normalize and dedupe tech names while preserving order."""
+    deduped = []
+    seen = set()
+    for item in items:
+        value = item.strip().lower()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def load_recon_tech_stack(target: str, limit: int = 12) -> list[str]:
+    """Best-effort tech extraction from recon/<target>/live/httpx_full.txt."""
+    httpx_path = os.path.join(REPO_ROOT, "recon", target, "live", "httpx_full.txt")
+    if not os.path.isfile(httpx_path):
+        return []
+
+    techs = []
+    with open(httpx_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            matches = re.findall(r"\[([^\]]+)\]", line)
+            if len(matches) < 3:
+                continue
+
+            for tech in matches[2].split(","):
+                normalized = tech.strip().lower()
+                if normalized and not normalized.isdigit():
+                    techs.append(normalized)
+
+            if len(techs) >= limit:
+                break
+
+    return dedupe_tech_stack(techs)[:limit]
+
+
+def resolve_tech_stack(target: str, cli_techs: list[str], memory: dict, limit: int = 12) -> list[str]:
+    """Resolve effective tech stack from CLI, then memory, then recon fallback."""
+    techs = dedupe_tech_stack(cli_techs)
+
+    if memory.get("tech_stack"):
+        techs = dedupe_tech_stack(techs + list(memory["tech_stack"]))
+
+    if techs:
+        return techs[:limit]
+
+    return load_recon_tech_stack(target, limit=limit)
 
 
 def fetch_all_intel(techs: list[str], target: str, program: str = "") -> list[dict]:
@@ -342,19 +394,14 @@ def main():
 
     techs = [t.strip() for t in args.tech.split(",") if t.strip()] if args.tech else []
 
+    # Load memory context before enforcing --tech so standalone /intel can reuse prior recon/hunt state.
+    memory = load_memory_context(args.memory_dir, args.target)
+    techs = resolve_tech_stack(args.target, techs, memory)
+
     if not techs:
         print(f"{YELLOW}No tech stack specified. Use --tech to specify technologies.{RESET}")
         print(f"Example: python3 intel_engine.py --target {args.target} --tech nextjs,graphql")
         sys.exit(1)
-
-    # Load memory context
-    memory = load_memory_context(args.memory_dir, args.target)
-
-    # If memory has tech stack, merge with CLI args
-    if memory.get("tech_stack"):
-        for t in memory["tech_stack"]:
-            if t.lower() not in [x.lower() for x in techs]:
-                techs.append(t)
 
     print(f"\n{BOLD}Intel Engine{RESET}")
     print(f"Target: {CYAN}{args.target}{RESET}")

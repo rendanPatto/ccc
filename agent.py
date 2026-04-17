@@ -32,9 +32,9 @@ Usage
   python3 agent.py --target example.com --langgraph          # force LangGraph
   python3 agent.py --target example.com --resume SESSION_ID
 
-From hunt.py:
-  hunt.py --target x --agent              # drops into agent mode
-  hunt.py --target x --agent --langgraph  # with real LangGraph
+From tools/hunt.py:
+  tools/hunt.py --target x --agent              # drops into agent mode
+  tools/hunt.py --target x --agent --langgraph  # with real LangGraph
 """
 
 from __future__ import annotations
@@ -48,6 +48,9 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from memory.hunt_journal import HuntJournal
+from memory.target_profile import default_memory_dir, load_target_profile
 
 # ── LangGraph optional import ──────────────────────────────────────────────────
 try:
@@ -75,19 +78,163 @@ except ImportError:
     _ollama_lib = None
     _OLLAMA_OK = False
 
-# ── hunt.py lazy imports (avoids running main()) ───────────────────────────────
+# ── tools/hunt.py compatibility loader (avoids running main()) ─────────────────
 _hunt = None
+
+
+class _HuntCompat:
+    """Bridge the newer autonomous agent onto this repo's current hunt module."""
+
+    _SYNC_ATTRS = {
+        "BASE_DIR",
+        "TOOLS_DIR",
+        "TARGETS_DIR",
+        "RECON_DIR",
+        "FINDINGS_DIR",
+        "REPORTS_DIR",
+    }
+
+    _OPTIONAL_TOOL_FUNCS = {
+        "check_tools": "check_tools",
+        "run_js_analysis": "run_js_analysis",
+        "run_secret_hunt": "run_secret_hunt",
+        "run_repo_source_hunt": "run_repo_source_hunt",
+        "run_param_discovery": "run_param_discovery",
+        "run_post_param_discovery": "run_post_param_discovery",
+        "run_api_fuzz": "run_api_fuzz",
+        "run_cors_check": "run_cors_check",
+        "run_cms_exploit": "run_cms_exploit",
+        "run_rce_scan": "run_rce_scan",
+        "run_sqlmap_targeted": "run_sqlmap_targeted",
+        "run_sqlmap_on_file": "run_sqlmap_request_file",
+        "run_jwt_audit": "run_jwt_audit",
+        "run_cve_hunt": "run_cve_hunt",
+        "run_zero_day_fuzzer": "run_zero_day_fuzzer",
+        "generate_reports": "generate_reports",
+    }
+
+    def __init__(self, module):
+        self._module = module
+        self.BASE_DIR = module.BASE_DIR
+        self.TOOLS_DIR = module.TOOLS_DIR
+        self.TARGETS_DIR = module.TARGETS_DIR
+        self.RECON_DIR = module.RECON_DIR
+        self.FINDINGS_DIR = module.FINDINGS_DIR
+        self.REPORTS_DIR = module.REPORTS_DIR
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        module = getattr(self, "_module", None)
+        if module is not None and name in self._SYNC_ATTRS:
+            setattr(module, name, value)
+
+    def __getattr__(self, name: str):
+        return getattr(self._module, name)
+
+    def supported_tool_names(self) -> set[str]:
+        supported = {"run_recon", "run_vuln_scan"}
+        for tool_name, func_name in self._OPTIONAL_TOOL_FUNCS.items():
+            if hasattr(self._module, func_name):
+                supported.add(tool_name)
+        return supported
+
+    def _resolve_recon_dir(self, domain: str) -> str:
+        return os.path.join(self.RECON_DIR, domain)
+
+    def _resolve_findings_dir(self, domain: str, create: bool = False) -> str:
+        path = os.path.join(self.FINDINGS_DIR, domain)
+        if create:
+            os.makedirs(path, exist_ok=True)
+        return path
+
+    def _activate_recon_session(
+        self,
+        domain: str,
+        *,
+        requested_session_id: str = "latest",
+        create: bool = True,
+    ) -> tuple[str, str]:
+        """Create a lightweight session directory for agent traces and resumes."""
+        session_root = os.path.join(self.TARGETS_DIR, domain, "sessions")
+        if create:
+            os.makedirs(session_root, exist_ok=True)
+
+        session_id = requested_session_id
+        if requested_session_id == "latest":
+            existing = [
+                name for name in os.listdir(session_root)
+                if os.path.isdir(os.path.join(session_root, name))
+            ] if os.path.isdir(session_root) else []
+            session_id = sorted(existing)[-1] if existing else datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        session_dir = os.path.join(session_root, session_id)
+        recon_dir = os.path.join(session_dir, "recon")
+        if create:
+            os.makedirs(recon_dir, exist_ok=True)
+        return session_id, recon_dir
+
+    def run_recon(
+        self,
+        domain: str,
+        *,
+        scope_lock: bool = False,
+        max_urls: int = 100,
+        quick: bool = False,
+    ) -> bool:
+        # Current orchestrator only supports quick/full split.
+        _ = (scope_lock, max_urls)
+        return self._module.run_recon(domain, quick=quick)
+
+    def run_vuln_scan(self, domain: str, *, quick: bool = False, full: bool = False) -> bool:
+        return self._module.run_vuln_scan(domain, quick=False if full else quick)
+
+
 def _h():
-    """Lazy-load hunt module once."""
+    """Lazy-load the current tools/hunt.py module once."""
     global _hunt
     if _hunt is None:
-        import importlib.util, sys as _sys
+        import importlib.util
+
         _here = os.path.dirname(os.path.abspath(__file__))
-        spec = importlib.util.spec_from_file_location("hunt", os.path.join(_here, "hunt.py"))
-        _hunt = importlib.util.module_from_spec(spec)
-        _sys.modules.setdefault("hunt", _hunt)
-        spec.loader.exec_module(_hunt)
+        hunt_path = os.path.join(_here, "tools", "hunt.py")
+        spec = importlib.util.spec_from_file_location("hunt_tools", hunt_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules.setdefault("hunt_tools", module)
+        spec.loader.exec_module(module)
+        _hunt = _HuntCompat(module)
     return _hunt
+
+
+def _load_agent_runtime_config() -> dict[str, Any]:
+    """Load optional repo config via tools/hunt.py when available."""
+    try:
+        config = _h().load_config()
+        return config if isinstance(config, dict) else {}
+    except Exception:
+        return {}
+
+
+def _resolve_ctf_mode(explicit: bool | None = None) -> bool:
+    """Resolve CTF mode from explicit override or repo config."""
+    if explicit is not None:
+        return explicit
+    return bool(_load_agent_runtime_config().get("ctf_mode", False))
+
+
+def _normalize_autopilot_mode(mode: str | None) -> str:
+    """Normalize autopilot checkpoint mode with a safe default."""
+    normalized = str(mode or "").strip().lower()
+    return normalized if normalized in {"paranoid", "normal", "yolo"} else "paranoid"
+
+
+def _finish_floor_for_mode(mode: str) -> int:
+    """Set a conservative minimum number of tool runs before finish."""
+    normalized = _normalize_autopilot_mode(mode)
+    return {
+        "paranoid": 8,
+        "normal": 6,
+        "yolo": 4,
+    }[normalized]
 
 # ── brain.py import ───────────────────────────────────────────────────────────
 try:
@@ -121,7 +268,7 @@ MEMORY_REFRESH_N = 5       # compress working_memory every N steps
 #  Tool definitions  (JSON Schema — compatible with Ollama native tool calling)
 # ──────────────────────────────────────────────────────────────────────────────
 
-TOOLS: list[dict] = [
+_ALL_TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
@@ -147,6 +294,18 @@ TOOLS: list[dict] = [
                 },
                 "required": [],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_tools",
+            "description": (
+                "Check which external security tools are installed locally. "
+                "Use when scans fail unexpectedly or you need to understand environment limits "
+                "before choosing a tool-heavy next step."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
     {
@@ -198,6 +357,37 @@ TOOLS: list[dict] = [
                 "Always worth running — secrets bypass all other controls."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_repo_source_hunt",
+            "description": (
+                "Scan a GitHub public repo or local repo path for leaked secrets, risky configs, "
+                "and GitHub Actions / CI issues."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_url": {
+                        "type": "string",
+                        "description": "GitHub public repo URL or owner/repo reference",
+                        "default": "",
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Local repository path already present on disk",
+                        "default": "",
+                    },
+                    "allow_large_repo": {
+                        "type": "boolean",
+                        "description": "Allow clone even when source-hunt thresholds are exceeded",
+                        "default": False,
+                    },
+                },
+                "required": [],
+            },
         },
     },
     {
@@ -342,6 +532,257 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "run_cve_hunt",
+            "description": (
+                "Run the CVE hunter against detected technologies and live targets. "
+                "Correlates recon tech fingerprints with known CVEs and nuclei CVE templates. "
+                "Use when tech stack has been identified and you want fast known-vuln coverage."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_zero_day_fuzzer",
+            "description": (
+                "Run the zero-day/logic fuzzer against the target to probe unusual methods, "
+                "header handling, parameter edge cases, and business-logic style flaws. "
+                "Use after recon when standard scans have not exhausted the attack surface."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "deep": {
+                        "type": "boolean",
+                        "description": "If true, use deeper and slower fuzzing routines.",
+                        "default": False,
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_reports",
+            "description": (
+                "Generate markdown reports from current findings artifacts for this target. "
+                "Use near the end after meaningful findings or scans have completed."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_autopilot_state",
+            "description": (
+                "Load the combined autopilot bootstrap view for this target: cached recon status, "
+                "memory summary, recommended first targets, guard cooldowns, and the next action. "
+                "Use this before active testing to resume quickly with minimal context."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_root": {
+                        "type": "string",
+                        "description": "Optional repository root override (defaults to current checkout).",
+                        "default": "",
+                    },
+                    "memory_dir": {
+                        "type": "string",
+                        "description": "Optional hunt-memory directory override.",
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_guard_status",
+            "description": (
+                "Read the persisted request guard state for this target: tracked hosts, failure counts, "
+                "and active cooldowns. Use this when active testing slows down or you need to avoid tripped hosts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_dir": {
+                        "type": "string",
+                        "description": "Optional hunt-memory directory override.",
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_repo_source_summary",
+            "description": (
+                "Read previously generated repository source-hunt artifacts for this target: "
+                "repo metadata, secret findings count, CI findings count, and the saved markdown summary."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_resume_summary",
+            "description": (
+                "Read hunt-memory history for this target and summarize prior sessions, "
+                "untested endpoints, and cross-target pattern matches before resuming work."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_dir": {
+                        "type": "string",
+                        "description": "Optional hunt-memory directory override.",
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_surface_summary",
+            "description": (
+                "Rank cached recon output with hunt-memory context and return a prioritized "
+                "attack surface summary. Use after recon to decide where to hunt first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_root": {
+                        "type": "string",
+                        "description": "Optional repository root override (defaults to current checkout).",
+                        "default": "",
+                    },
+                    "memory_dir": {
+                        "type": "string",
+                        "description": "Optional hunt-memory directory override.",
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_intel",
+            "description": (
+                "Fetch memory-aware CVE and disclosure intel for the target. "
+                "Automatically falls back to recon-detected tech stack when no tech list is provided."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tech": {
+                        "type": "string",
+                        "description": "Optional comma-separated tech stack override.",
+                        "default": "",
+                    },
+                    "program": {
+                        "type": "string",
+                        "description": "Optional HackerOne program handle for disclosed-report lookups.",
+                        "default": "",
+                    },
+                    "memory_dir": {
+                        "type": "string",
+                        "description": "Optional hunt-memory directory override.",
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_finding",
+            "description": (
+                "Persist a confirmed/partial/rejected finding into hunt memory so future hunts "
+                "can reuse the endpoint, technique, and tech stack context."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Optional target override; defaults to the current domain.",
+                        "default": "",
+                    },
+                    "vuln_class": {
+                        "type": "string",
+                        "description": "Vulnerability class, e.g. idor or ssrf.",
+                    },
+                    "endpoint": {
+                        "type": "string",
+                        "description": "Affected URL or normalized path.",
+                    },
+                    "result": {
+                        "type": "string",
+                        "description": "Remember outcome: confirmed, rejected, partial, or informational.",
+                    },
+                    "severity": {
+                        "type": "string",
+                        "description": "Optional severity label.",
+                        "default": "",
+                    },
+                    "payout": {
+                        "type": "number",
+                        "description": "Optional payout amount.",
+                    },
+                    "technique": {
+                        "type": "string",
+                        "description": "Optional technique label.",
+                        "default": "",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional notes describing the finding.",
+                        "default": "",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of tags.",
+                        "default": [],
+                    },
+                    "tech_stack": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of technologies for pattern learning.",
+                        "default": [],
+                    },
+                    "memory_dir": {
+                        "type": "string",
+                        "description": "Optional hunt-memory directory override.",
+                        "default": "",
+                    },
+                },
+                "required": ["vuln_class", "endpoint", "result"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_recon_summary",
             "description": (
                 "Read and summarize current recon data: live hosts, tech stack, "
@@ -407,7 +848,51 @@ TOOLS: list[dict] = [
     },
 ]
 
+_DISPATCHER_ONLY_TOOLS = {
+    "read_autopilot_state",
+    "read_guard_status",
+    "read_repo_source_summary",
+    "read_resume_summary",
+    "read_surface_summary",
+    "run_intel",
+    "remember_finding",
+    "read_recon_summary",
+    "read_findings_summary",
+    "update_working_memory",
+    "finish",
+}
+
+
+def _enabled_tool_specs() -> list[dict]:
+    """Expose only tools that are wired into the current checkout."""
+    available = _h().supported_tool_names() | _DISPATCHER_ONLY_TOOLS
+    return [spec for spec in _ALL_TOOL_SPECS if spec["function"]["name"] in available]
+
+
+TOOLS = _enabled_tool_specs()
 TOOL_NAMES = {t["function"]["name"] for t in TOOLS}
+
+
+def _phase_flags(completed_steps: list[str]) -> dict[str, bool]:
+    completed = set(completed_steps)
+    return {
+        "recon": "run_recon" in completed,
+        "scan": "run_vuln_scan" in completed,
+        "tool_check": "check_tools" in completed,
+        "js_analysis": "run_js_analysis" in completed,
+        "secret_hunt": "run_secret_hunt" in completed,
+        "param_discovery": "run_param_discovery" in completed,
+        "post_param_discovery": "run_post_param_discovery" in completed,
+        "api_fuzz": "run_api_fuzz" in completed,
+        "cors": "run_cors_check" in completed,
+        "cms_exploit": "run_cms_exploit" in completed,
+        "rce_scan": "run_rce_scan" in completed,
+        "sqlmap": "run_sqlmap_targeted" in completed or "run_sqlmap_on_file" in completed,
+        "jwt_audit": "run_jwt_audit" in completed,
+        "cve_hunt": "run_cve_hunt" in completed,
+        "zero_day_fuzzer": "run_zero_day_fuzzer" in completed,
+        "reports_generated": "generate_reports" in completed,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -426,6 +911,7 @@ class HuntMemory:
     def __init__(self, session_file: str):
         self.session_file    = session_file
         self.working_memory  = ""
+        self.bootstrap_context = ""
         self.findings_log:   list[dict] = []
         self.observation_buf: list[dict] = []   # {tool, ts, text}
         self.completed_steps: list[str]  = []
@@ -516,6 +1002,12 @@ class ToolDispatcher:
         self.max_urls        = max_urls
         self.default_cookies = default_cookies
 
+    def _resolve_memory_dir(self, override: str = "") -> str:
+        resolved = str(override or "").strip()
+        if resolved:
+            return resolved
+        return str(default_memory_dir(_h().BASE_DIR))
+
     def dispatch(self, name: str, args: dict) -> str:
         """Execute named tool and return text observation."""
         h = _h()
@@ -530,6 +1022,10 @@ class ToolDispatcher:
                     max_urls=int(args.get("max_urls", self.max_urls)),
                 )
                 obs = self._summarize_recon(domain, ok)
+
+            elif name == "check_tools":
+                installed, missing = h.check_tools()
+                obs = self._summarize_tools(installed, missing)
 
             elif name == "run_vuln_scan":
                 ok = h.run_vuln_scan(
@@ -546,6 +1042,15 @@ class ToolDispatcher:
             elif name == "run_secret_hunt":
                 ok = h.run_secret_hunt(domain)
                 obs = self._summarize_findings(domain, "secrets", ok)
+
+            elif name == "run_repo_source_hunt":
+                ok = h.run_repo_source_hunt(
+                    domain,
+                    repo_url=str(args.get("repo_url", "")),
+                    repo_path=str(args.get("repo_path", "")),
+                    allow_large_repo=bool(args.get("allow_large_repo", False)),
+                )
+                obs = self._summarize_repo_source(domain, ok)
 
             elif name == "run_param_discovery":
                 ok = h.run_param_discovery(domain)
@@ -591,6 +1096,71 @@ class ToolDispatcher:
                 ok = h.run_jwt_audit(domain)
                 obs = self._summarize_findings(domain, "jwt", ok)
 
+            elif name == "run_cve_hunt":
+                ok = h.run_cve_hunt(domain)
+                obs = self._summarize_findings(domain, "cve", ok)
+
+            elif name == "run_zero_day_fuzzer":
+                ok = h.run_zero_day_fuzzer(domain, deep=bool(args.get("deep", False)))
+                obs = self._summarize_findings(domain, "zero-day", ok)
+
+            elif name == "generate_reports":
+                count = h.generate_reports(domain)
+                obs = self._summarize_reports(domain, count)
+
+            elif name == "read_autopilot_state":
+                obs = self._read_autopilot_state(
+                    domain,
+                    repo_root=str(args.get("repo_root", "")),
+                    memory_dir=str(args.get("memory_dir", "")),
+                )
+
+            elif name == "read_guard_status":
+                obs = self._read_guard_status(
+                    domain,
+                    memory_dir=str(args.get("memory_dir", "")),
+                )
+
+            elif name == "read_repo_source_summary":
+                obs = self._read_repo_source_summary(domain)
+
+            elif name == "read_resume_summary":
+                obs = self._read_resume_summary(
+                    domain,
+                    memory_dir=str(args.get("memory_dir", "")),
+                )
+
+            elif name == "read_surface_summary":
+                obs = self._read_surface_summary(
+                    domain,
+                    repo_root=str(args.get("repo_root", "")),
+                    memory_dir=str(args.get("memory_dir", "")),
+                )
+
+            elif name == "run_intel":
+                obs = self._run_intel(
+                    domain,
+                    tech=str(args.get("tech", "")),
+                    program=str(args.get("program", "")),
+                    memory_dir=str(args.get("memory_dir", "")),
+                )
+
+            elif name == "remember_finding":
+                obs = self._remember_finding(
+                    domain,
+                    target=str(args.get("target", "")),
+                    vuln_class=str(args.get("vuln_class", "")),
+                    endpoint=str(args.get("endpoint", "")),
+                    result=str(args.get("result", "")),
+                    severity=str(args.get("severity", "")),
+                    payout=args.get("payout", None),
+                    technique=str(args.get("technique", "")),
+                    notes=str(args.get("notes", "")),
+                    tags=args.get("tags", []),
+                    tech_stack=args.get("tech_stack", []),
+                    memory_dir=str(args.get("memory_dir", "")),
+                )
+
             elif name == "read_recon_summary":
                 obs = self._read_recon_files(domain)
 
@@ -631,18 +1201,13 @@ class ToolDispatcher:
 
     def _summarize_recon(self, domain: str, ok: bool) -> str:
         h = _h()
-        recon_dir = h._resolve_recon_dir(domain)
         lines = [f"run_recon: {'OK' if ok else 'PARTIAL'}"]
+        recon_dir = h._resolve_recon_dir(domain)
 
-        # Count live hosts
-        for fn in ("live/httpx_full.txt", "httpx_full.txt"):
-            fp = os.path.join(recon_dir, fn)
-            if os.path.isfile(fp):
-                count = sum(1 for _ in open(fp) if _.strip())
-                lines.append(f"Live hosts: {count}")
-                break
+        live_urls = h._collect_live_urls(domain)
+        if live_urls:
+            lines.append(f"Live hosts: {len(live_urls)}")
 
-        # Count resolved subdomains
         for fn in ("resolved.txt", "all.txt"):
             fp = os.path.join(recon_dir, fn)
             if os.path.isfile(fp):
@@ -650,22 +1215,34 @@ class ToolDispatcher:
                 lines.append(f"Subdomains: {count}")
                 break
 
-        # Tech detections
-        for fn in ("tech_priority.txt", "tech.txt"):
-            fp = os.path.join(recon_dir, fn)
-            if os.path.isfile(fp):
-                techs = [l.strip() for l in open(fp) if l.strip()][:10]
-                lines.append(f"Tech detected: {', '.join(techs)}")
-                break
+        techs = h._extract_recon_tech_stack(domain, limit=10)
+        if techs:
+            lines.append(f"Tech detected: {', '.join(techs)}")
 
-        # Parameterized URLs
-        for fn in ("urls/with_params.txt", "params/with_params.txt"):
-            fp = os.path.join(recon_dir, fn)
-            if os.path.isfile(fp):
-                count = sum(1 for _ in open(fp) if _.strip())
-                lines.append(f"Parameterized URLs: {count}")
-                break
+        all_urls = h._collect_all_urls(domain)
+        if all_urls:
+            lines.append(f"All URLs: {len(all_urls)}")
 
+        param_urls = h._collect_param_urls(domain)
+        if param_urls:
+            lines.append(f"Parameterized URLs: {len(param_urls)}")
+
+        api_urls = h._collect_api_endpoints(domain)
+        if api_urls:
+            lines.append(f"API endpoints: {len(api_urls)}")
+
+        js_urls = h._collect_js_urls(domain)
+        if js_urls:
+            lines.append(f"JavaScript assets: {len(js_urls)}")
+
+        return "\n".join(lines)
+
+    def _summarize_tools(self, installed: list[str], missing: list[str]) -> str:
+        lines = [f"check_tools: {len(installed)} installed, {len(missing)} missing"]
+        if installed:
+            lines.append("Installed: " + ", ".join(installed[:12]))
+        if missing:
+            lines.append("Missing: " + ", ".join(missing[:12]))
         return "\n".join(lines)
 
     def _summarize_findings(self, domain: str, label: str, ok: bool) -> str:
@@ -694,16 +1271,195 @@ class ToolDispatcher:
             lines.append("  No HIGH/CRITICAL findings in artifacts (check logs above for details).")
         return "\n".join(lines[:20])
 
+    def _summarize_repo_source(self, domain: str, ok: bool) -> str:
+        h = _h()
+        findings_dir = h._resolve_findings_dir(domain, create=False)
+        exposure_dir = os.path.join(findings_dir, "exposure") if findings_dir else ""
+        lines = [f"run_repo_source_hunt: {'OK' if ok else 'confirmation required / check artifacts'}"]
+
+        meta_path = os.path.join(exposure_dir, "repo_source_meta.json")
+        if os.path.isfile(meta_path):
+            try:
+                meta = json.loads(Path(meta_path).read_text())
+                lines.append(
+                    "  source={source_kind} files={file_count} size={size_bytes} clone={clone_performed}".format(**meta)
+                )
+            except Exception:
+                pass
+
+        for filename in ("repo_secrets.json", "repo_ci_findings.json"):
+            file_path = os.path.join(exposure_dir, filename)
+            if not os.path.isfile(file_path):
+                continue
+            try:
+                payload = json.loads(Path(file_path).read_text())
+                lines.append(f"  {filename}: {len(payload)} findings")
+            except Exception:
+                pass
+
+        summary_path = os.path.join(exposure_dir, "repo_summary.md")
+        if os.path.isfile(summary_path):
+            summary = Path(summary_path).read_text(errors="replace")[:400].replace("\n", " ")
+            lines.append(f"  [repo_summary.md] {summary}")
+
+        return "\n".join(lines)
+
+    def _summarize_reports(self, domain: str, count: int) -> str:
+        h = _h()
+        report_dir = os.path.join(h.REPORTS_DIR, domain)
+        lines = [f"generate_reports: {count} report(s) generated"]
+        if os.path.isdir(report_dir):
+            reports = sorted(
+                fn for fn in os.listdir(report_dir)
+                if fn.endswith(".md") and fn != "SUMMARY.md"
+            )
+            if reports:
+                lines.append("Reports: " + ", ".join(reports[:8]))
+        return "\n".join(lines)
+
+    def _read_autopilot_state(self, domain: str, repo_root: str = "", memory_dir: str = "") -> str:
+        from tools.autopilot_state import build_autopilot_state, format_autopilot_state
+
+        resolved_repo_root = repo_root or _h().BASE_DIR
+        resolved_memory_dir = self._resolve_memory_dir(memory_dir)
+        state = build_autopilot_state(resolved_repo_root, domain, memory_dir=resolved_memory_dir)
+        return format_autopilot_state(state)
+
+    def _read_guard_status(self, domain: str, memory_dir: str = "") -> str:
+        from tools.request_guard import format_guard_output, load_guard_status
+
+        resolved_memory_dir = self._resolve_memory_dir(memory_dir)
+        status = load_guard_status(resolved_memory_dir, domain)
+        return format_guard_output(status, "status")
+
+    def _read_repo_source_summary(self, domain: str) -> str:
+        h = _h()
+        findings_dir = h._resolve_findings_dir(domain, create=False)
+        exposure_dir = os.path.join(findings_dir, "exposure") if findings_dir else ""
+        if not exposure_dir or not os.path.isdir(exposure_dir):
+            return f"No repo source artifacts found for {domain}."
+        return self._summarize_repo_source(domain, ok=True)
+
+    def _read_resume_summary(self, domain: str, memory_dir: str = "") -> str:
+        from tools.resume import format_resume_output, load_resume_summary
+
+        resolved_memory_dir = self._resolve_memory_dir(memory_dir)
+        summary = load_resume_summary(resolved_memory_dir, domain)
+        return format_resume_output(summary, domain)
+
+    def _read_surface_summary(self, domain: str, repo_root: str = "", memory_dir: str = "") -> str:
+        from tools.surface import format_surface_output, load_surface_context, rank_surface
+
+        resolved_repo_root = repo_root or _h().BASE_DIR
+        resolved_memory_dir = self._resolve_memory_dir(memory_dir)
+        context = load_surface_context(resolved_repo_root, domain, memory_dir=resolved_memory_dir)
+        ranked = rank_surface(context)
+        return format_surface_output(ranked, domain)
+
+    def _run_intel(self, domain: str, tech: str = "", program: str = "", memory_dir: str = "") -> str:
+        from tools.intel_engine import (
+            fetch_all_intel,
+            format_output,
+            load_memory_context,
+            prioritize_intel,
+        )
+
+        resolved_memory_dir = self._resolve_memory_dir(memory_dir)
+        memory = load_memory_context(resolved_memory_dir, domain)
+
+        techs = [item.strip().lower() for item in tech.split(",") if item.strip()]
+        for item in memory.get("tech_stack", []):
+            normalized = str(item).strip().lower()
+            if normalized and normalized not in techs:
+                techs.append(normalized)
+        for item in _h()._extract_recon_tech_stack(domain, limit=12):
+            normalized = str(item).strip().lower()
+            if normalized and normalized not in techs:
+                techs.append(normalized)
+
+        if not techs:
+            return (
+                f"No tech stack available for {domain}.\n"
+                f"Run read_recon_summary or pass tech explicitly before run_intel."
+            )
+
+        results = fetch_all_intel(techs, domain, program)
+        intel = prioritize_intel(results, memory)
+        return format_output(domain, intel)
+
+    def _remember_finding(
+        self,
+        domain: str,
+        *,
+        target: str = "",
+        vuln_class: str = "",
+        endpoint: str = "",
+        result: str = "",
+        severity: str = "",
+        payout: Any = None,
+        technique: str = "",
+        notes: str = "",
+        tags: Any = None,
+        tech_stack: Any = None,
+        memory_dir: str = "",
+    ) -> str:
+        from tools.remember import remember_finding
+
+        resolved_target = target or domain
+        if not vuln_class or not endpoint or not result:
+            return "ERROR: remember_finding requires vuln_class, endpoint, and result."
+
+        resolved_memory_dir = self._resolve_memory_dir(memory_dir)
+        resolved_tags = tags if isinstance(tags, list) else []
+        resolved_tech_stack = tech_stack if isinstance(tech_stack, list) else []
+        numeric_payout = None if payout in ("", None) else float(payout)
+
+        summary = remember_finding(
+            memory_dir=resolved_memory_dir,
+            target=resolved_target,
+            vuln_class=vuln_class,
+            endpoint=endpoint,
+            result=result,
+            severity=severity or None,
+            payout=numeric_payout,
+            technique=technique or None,
+            notes=notes or None,
+            tags=resolved_tags,
+            tech_stack=resolved_tech_stack,
+        )
+
+        lines = [
+            "REMEMBERED",
+            f"Target: {summary['target']}",
+            f"Endpoint: {summary['endpoint']}",
+            f"Journal: {'yes' if summary['journal_saved'] else 'no'}",
+            f"Target profile updated: {'yes' if summary['finding_saved'] or summary['journal_saved'] else 'no'}",
+            f"Pattern saved: {'yes' if summary['pattern_saved'] else 'no'}",
+        ]
+        if summary["tech_stack"]:
+            lines.append(f"Tech stack: {', '.join(summary['tech_stack'])}")
+        return "\n".join(lines)
+
     def _summarize_params(self, domain: str, ok: bool) -> str:
         h = _h()
         recon_dir  = h._resolve_recon_dir(domain)
         params_dir = os.path.join(recon_dir, "params")
         lines = [f"run_param_discovery: {'OK' if ok else 'partial'}"]
-        for fn in ("paramspider.txt", "arjun.json"):
-            fp = os.path.join(params_dir, fn)
-            if os.path.isfile(fp):
-                count = sum(1 for _ in open(fp) if _.strip())
-                lines.append(f"  {fn}: {count} lines")
+
+        interesting_path = os.path.join(params_dir, "interesting_params.txt")
+        if os.path.isfile(interesting_path):
+            count = sum(1 for _ in open(interesting_path) if _.strip())
+            lines.append(f"  interesting_params.txt: {count} candidates")
+
+        arjun_outputs = sorted(
+            fn for fn in os.listdir(params_dir)
+            if fn.startswith("arjun_") and fn.endswith(".txt")
+        ) if os.path.isdir(params_dir) else []
+        if arjun_outputs:
+            lines.append(f"  arjun outputs: {len(arjun_outputs)} files")
+
+        if len(lines) == 1:
+            lines.append("  No parameter discovery artifacts found.")
         return "\n".join(lines)
 
     def _summarize_post_params(self, domain: str, ok: bool) -> str:
@@ -724,21 +1480,72 @@ class ToolDispatcher:
 
     def _read_recon_files(self, domain: str) -> str:
         h = _h()
-        recon_dir = h._resolve_recon_dir(domain)
         parts = []
 
-        for label, fn in [
-            ("Live hosts (sample)",    "httpx_full.txt"),
-            ("Tech priority",          "tech_priority.txt"),
-            ("Parameterized URLs",     "urls/with_params.txt"),
-            ("All URLs (sample)",      "urls/all.txt"),
-        ]:
-            fp = os.path.join(recon_dir, fn)
-            if os.path.isfile(fp):
-                lines = [l.strip() for l in open(fp) if l.strip()]
-                count = len(lines)
-                sample = lines[:20]
-                parts.append(f"=== {label} ({count} total) ===\n" + "\n".join(sample))
+        live_urls = h._collect_live_urls(domain)
+        if live_urls:
+            parts.append(
+                f"=== Live hosts ({len(live_urls)} total) ===\n" + "\n".join(live_urls[:20])
+            )
+
+        techs = h._extract_recon_tech_stack(domain, limit=12)
+        if techs:
+            parts.append("=== Tech stack ===\n" + "\n".join(techs))
+
+        api_urls = h._collect_api_endpoints(domain)
+        if api_urls:
+            parts.append(
+                f"=== API endpoints ({len(api_urls)} total) ===\n" + "\n".join(api_urls[:20])
+            )
+
+        param_urls = h._collect_param_urls(domain)
+        if param_urls:
+            parts.append(
+                f"=== Parameterized URLs ({len(param_urls)} total) ===\n" + "\n".join(param_urls[:20])
+            )
+
+        js_urls = h._collect_js_urls(domain)
+        if js_urls:
+            parts.append(
+                f"=== JavaScript assets ({len(js_urls)} total) ===\n" + "\n".join(js_urls[:20])
+            )
+
+        all_urls = h._collect_all_urls(domain)
+        if all_urls:
+            parts.append(
+                f"=== All URLs ({len(all_urls)} total) ===\n" + "\n".join(all_urls[:20])
+            )
+
+        post_params_path = os.path.join(h._resolve_recon_dir(domain), "params", "post_params.json")
+        if os.path.isfile(post_params_path):
+            try:
+                post_params = json.loads(Path(post_params_path).read_text())
+                sample = []
+                for url, info in list(post_params.items())[:10]:
+                    params = ", ".join(info.get("params", [])[:6])
+                    sample.append(f"{url} -> {params}")
+                if sample:
+                    parts.append(
+                        f"=== POST params ({len(post_params)} forms) ===\n" + "\n".join(sample)
+                    )
+            except Exception:
+                pass
+
+        findings_dir = h._resolve_findings_dir(domain, create=False)
+        exposure_dir = os.path.join(findings_dir, "exposure") if findings_dir else ""
+        if exposure_dir and os.path.isdir(exposure_dir):
+            known_artifacts = (
+                "repo_source_meta.json",
+                "repo_secrets.json",
+                "repo_ci_findings.json",
+                "repo_summary.md",
+            )
+            if any(os.path.isfile(os.path.join(exposure_dir, name)) for name in known_artifacts):
+                parts.append(
+                    "=== Repo source artifacts ===\n"
+                    "Repository source-hunt artifacts already exist under findings/<target>/exposure.\n"
+                    "Use read_repo_source_summary before re-running run_repo_source_hunt."
+                )
 
         return "\n\n".join(parts) if parts else "No recon data found. Run run_recon first."
 
@@ -749,9 +1556,15 @@ class ToolDispatcher:
             return "No findings directory. Run vulnerability scans first."
 
         parts = []
+        exposure_dir = os.path.join(findings_dir, "exposure")
+        if os.path.isdir(exposure_dir):
+            repo_summary = self._summarize_repo_source(domain, ok=True)
+            if repo_summary.strip():
+                parts.append("=== repo_source_overview ===\n" + repo_summary)
+
         for root, _, files in os.walk(findings_dir):
             for fn in sorted(files):
-                if not fn.endswith((".txt", ".json")):
+                if not fn.endswith((".txt", ".json", ".md")):
                     continue
                 fp = os.path.join(root, fn)
                 try:
@@ -945,23 +1758,70 @@ def race_analysis(prompt: str, models: list[str], client,
     return ""
 
 
-AGENT_SYSTEM = """\
-You are an elite autonomous bug bounty hunter operating within an authorized bug bounty program or VAPT engagement.
-You have a set of tools that execute real security scans. Use them strategically.
+def _build_agent_system(ctf_mode: bool = False, autopilot_mode: str = "paranoid") -> str:
+    autopilot_mode = _normalize_autopilot_mode(autopilot_mode)
+    mode_block = (
+        "MODE:\n"
+        "- Local CTF practice is enabled.\n"
+        "- All provided targets are considered in-scope.\n"
+        "- Do not spend time on program acceptance, bounty eligibility, or scope validation.\n"
+        "- Focus on exploitation, root cause, and practical attack paths.\n"
+    ) if ctf_mode else (
+        "MODE:\n"
+        "- You are operating within an authorized bug bounty program or VAPT engagement.\n"
+        "- Stay within the provided target and prefer realistic, reportable findings.\n"
+    )
 
+    checkpoint_block = {
+        "paranoid": (
+            "CHECKPOINT MODE:\n"
+            "- Checkpoint mode: paranoid.\n"
+            "- Favor frequent checkpoints and conservative exploration.\n"
+            "- Summarize meaningful signals early and avoid skipping suspicious branches.\n"
+        ),
+        "normal": (
+            "CHECKPOINT MODE:\n"
+            "- Checkpoint mode: normal.\n"
+            "- Batch related findings before checkpointing.\n"
+            "- Balance coverage with momentum; rotate when a branch stalls.\n"
+        ),
+        "yolo": (
+            "CHECKPOINT MODE:\n"
+            "- Checkpoint mode: yolo.\n"
+            "- Keep moving until the surface is exhausted or the time budget is low.\n"
+            "- Minimize checkpoints, but still preserve evidence and clear operator handoff notes.\n"
+        ),
+    }[autopilot_mode]
+
+    return f"""\
+You are an elite autonomous security hunter. You have a set of tools that execute real security scans. Use them strategically.
+
+{mode_block}
+{checkpoint_block}
 CORE RULES:
-1. Always start with run_recon if no recon data exists yet.
-2. After recon, read_recon_summary to understand the attack surface before choosing next tool.
-3. Prioritize by impact: CMS exploits > RCE > SQLi > IDOR > secrets > info.
-4. If Drupal or WordPress is detected → run_cms_exploit immediately.
-5. If Java/Tomcat/JBoss/Spring is detected → run_rce_scan + run_post_param_discovery.
-6. If parameterized URLs found → run_sqlmap_targeted.
-7. If JWT tokens appear in any recon data → run_jwt_audit.
-8. Maintain your notes via update_working_memory after each significant discovery.
-9. Call finish when: all high-priority tools done, time running low, or no new attack surface.
-10. DO NOT repeat a tool that already completed in this session unless explicitly justified.
+1. If scans fail unexpectedly or the environment looks incomplete, use check_tools once to understand local capability limits.
+2. Prefer read_autopilot_state early to see whether recon/memory already exist, which targets are hottest, and whether any host is cooling down.
+3. If no recon data exists yet, start with run_recon. After recon, use read_autopilot_state or read_surface_summary before choosing next tool.
+4. If read_autopilot_state or bootstrap context shows cooling/tripped hosts, avoid hammering them and prefer the highest-score non-tripped target first.
+5. If active testing starts returning 403/429/timeouts or progress stalls, use read_guard_status to inspect breaker/cooldown state before retrying hosts.
+6. If repository source-hunt artifacts already exist for this target, use read_repo_source_summary before re-running run_repo_source_hunt.
+7. Prioritize by impact: CMS exploits > RCE > SQLi > IDOR/auth bypass > secrets > info.
+8. If Drupal or WordPress is detected → run_cms_exploit immediately. If any stack is clearly identified, run_cve_hunt.
+9. If Java/Tomcat/JBoss/Spring is detected → run_rce_scan + run_post_param_discovery.
+10. If JS assets exist → run_js_analysis, then run_secret_hunt if secrets/tokens/config leaks are plausible.
+11. If API endpoints or numeric-object URLs exist → run_api_fuzz. If authenticated surfaces exist → run_cors_check.
+12. If parameterized URLs found → run_param_discovery and run_sqlmap_targeted. Use run_sqlmap_on_file for specific raw requests.
+13. If JWT tokens appear in recon data → run_jwt_audit.
+14. When standard scans have plateaued but attack surface remains, use run_zero_day_fuzzer.
+15. Generate reports with generate_reports before finish when findings or useful artifacts exist.
+16. Maintain your notes via update_working_memory after each significant discovery.
+17. Call finish when: all high-priority tools done, time running low, or no new attack surface.
+18. DO NOT repeat a tool that already completed in this session unless explicitly justified.
 
 Think step by step. Pick the highest-impact next action given what you know."""
+
+
+AGENT_SYSTEM = _build_agent_system(ctf_mode=False, autopilot_mode="paranoid")
 
 
 class ReActAgent:
@@ -977,7 +1837,9 @@ class ReActAgent:
                  max_steps: int = 20,
                  time_budget_hours: float = 2.0,
                  model: str | None = None,
-                 tracer: AgentTracer | None = None):
+                 tracer: AgentTracer | None = None,
+                 ctf_mode: bool = False,
+                 autopilot_mode: str = "paranoid"):
         self.domain     = domain
         self.memory     = memory
         self.dispatcher = dispatcher
@@ -986,6 +1848,13 @@ class ReActAgent:
         self.time_budget_secs = time_budget_hours * 3600
         self.done       = False
         self.verdict    = ""
+        self.ctf_mode   = ctf_mode
+        self.autopilot_mode = _normalize_autopilot_mode(autopilot_mode)
+        self.min_steps_before_finish = _finish_floor_for_mode(self.autopilot_mode)
+        self.system_prompt = _build_agent_system(
+            ctf_mode=ctf_mode,
+            autopilot_mode=self.autopilot_mode,
+        )
 
         # ctf-agent techniques
         self.loop_detector = LoopDetector()
@@ -1017,6 +1886,10 @@ class ReActAgent:
         race_note = f"  race_models={self._race_models}" if len(self._race_models) > 1 else ""
         print(f"{DIM}[Agent] max_steps={max_steps}  budget={time_budget_hours}h  "
               f"tool_calling=native{race_note}{NC}", flush=True)
+        print(f"{DIM}[Agent] checkpoint_mode={self.autopilot_mode}  "
+              f"finish_floor={self.min_steps_before_finish}{NC}", flush=True)
+        if self.ctf_mode:
+            print(f"{YELLOW}[Agent] CTF mode enabled — scope/program checks are skipped.{NC}", flush=True)
 
     def _pick_tool_capable_model(self) -> str | None:
         """Prefer models with confirmed Ollama tool-calling support."""
@@ -1050,6 +1923,8 @@ class ReActAgent:
         completed = list(dict.fromkeys(self.memory.completed_steps))
         ctx_parts = [
             f"## Autonomous Hunt — {self.domain}",
+            f"Mode: {'CTF' if self.ctf_mode else 'Bug bounty/VAPT'}",
+            f"Checkpoint mode: {self.autopilot_mode}",
             f"Step {self.memory.step_count + 1}/{self.max_steps}  "
             f"| Elapsed {elapsed_mins}m / {budget_mins}m budget  "
             f"| {remaining}m remaining",
@@ -1057,6 +1932,15 @@ class ReActAgent:
             f"## Completed steps ({len(completed)})",
             ", ".join(completed) if completed else "(none yet)",
             "",
+        ]
+        bootstrap = _active_bootstrap_context(self.memory)
+        if bootstrap:
+            ctx_parts.extend([
+                "## Bootstrap focus",
+                bootstrap,
+                "",
+            ])
+        ctx_parts.extend([
             "## Working memory (your notes)",
             self.memory.working_memory or "(empty — use update_working_memory to take notes)",
             "",
@@ -1065,7 +1949,7 @@ class ReActAgent:
             "",
             "## Recent tool outputs (last 3)",
             self.memory.recent_observations(3),
-        ]
+        ])
         return "\n".join(ctx_parts)
 
     def _check_bump(self) -> str | None:
@@ -1112,7 +1996,7 @@ class ReActAgent:
             response = self.client.chat(
                 model=self.model,
                 messages=[
-                    {"role": "system",    "content": AGENT_SYSTEM},
+                    {"role": "system",    "content": self.system_prompt},
                     {"role": "user",      "content": user_msg},
                 ],
                 tools=TOOLS,
@@ -1143,8 +2027,8 @@ class ReActAgent:
                         args = {}
 
                 # ── Persistence enforcement: block early finish ──────────
-                if name == "finish" and self.memory.step_count < self.MIN_STEPS_BEFORE_FINISH:
-                    remaining_needed = self.MIN_STEPS_BEFORE_FINISH - self.memory.step_count
+                if name == "finish" and self.memory.step_count < self.min_steps_before_finish:
+                    remaining_needed = self.min_steps_before_finish - self.memory.step_count
                     print(f"{YELLOW}[Agent] Finish blocked — only {self.memory.step_count} steps done, "
                           f"need {remaining_needed} more. Continuing...{NC}", flush=True)
                     results.append(
@@ -1267,6 +2151,7 @@ class ReActAgent:
         print(f"  Steps executed:  {self.memory.step_count}")
         print(f"  Completed tools: {', '.join(dict.fromkeys(self.memory.completed_steps))}")
         print(f"  Findings:        {len(self.memory.findings_log)}")
+        print(f"  Checkpoint mode: {self.autopilot_mode}")
         if self.tracer:
             print(f"  Trace log:       {self.tracer.log_path}")
         if self.bump_file:
@@ -1286,11 +2171,8 @@ class ReActAgent:
             "working_memory":   self.memory.working_memory,
             "verdict":          self.verdict,
             "session_file":     self.memory.session_file,
-            # Map completed_steps to phase flags print_dashboard checks
-            **{step: (step in self.memory.completed_steps)
-               for step in ("recon", "scan", "js_analysis", "secret_hunt",
-                            "param_discovery", "api_fuzz", "cors", "cms_exploit",
-                            "rce_scan", "sqlmap", "jwt_audit")},
+            "autopilot_mode":   self.autopilot_mode,
+            **_phase_flags(self.memory.completed_steps),
         }
 
 
@@ -1300,7 +2182,9 @@ class ReActAgent:
 
 def build_langgraph_agent(domain: str, dispatcher: ToolDispatcher,
                            memory: HuntMemory, model: str,
-                           max_steps: int = 20):
+                           max_steps: int = 20,
+                           ctf_mode: bool = False,
+                           autopilot_mode: str = "paranoid"):
     """
     Build a real LangGraph ReAct agent.
     State: MessagesState (list of messages)
@@ -1321,6 +2205,10 @@ def build_langgraph_agent(domain: str, dispatcher: ToolDispatcher,
     from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
     from langchain_core.tools import tool as lc_tool, StructuredTool
     import inspect
+    system_prompt = _build_agent_system(
+        ctf_mode=ctf_mode,
+        autopilot_mode=autopilot_mode,
+    )
 
     # ── Wrap dispatcher calls as LangChain tools ──────────────────────────
     lc_tools = []
@@ -1359,7 +2247,7 @@ def build_langgraph_agent(domain: str, dispatcher: ToolDispatcher,
         # Prepend system + context to messages if first call
         msgs = state["messages"]
         if not any(isinstance(m, SystemMessage) for m in msgs):
-            msgs = [SystemMessage(content=AGENT_SYSTEM),
+            msgs = [SystemMessage(content=system_prompt),
                     HumanMessage(content=context)] + list(msgs)
         response = llm_with_tools.invoke(msgs)
         # Check finish signal
@@ -1395,16 +2283,194 @@ def build_langgraph_agent(domain: str, dispatcher: ToolDispatcher,
 def _build_context_for_langgraph(domain: str, memory: HuntMemory) -> str:
     """Same context builder used by LangGraph agent node."""
     completed = list(dict.fromkeys(memory.completed_steps))
-    return (
-        f"Completed steps: {', '.join(completed) or 'none'}\n"
-        f"Working memory:\n{memory.working_memory or '(empty)'}\n\n"
-        f"Findings so far:\n{memory.findings_summary()}\n\n"
-        f"Recent observations:\n{memory.recent_observations(2)}"
-    )
+    parts = [f"Completed steps: {', '.join(completed) or 'none'}\n"]
+    bootstrap = _active_bootstrap_context(memory)
+    if bootstrap:
+        parts.append(f"Bootstrap:\n{bootstrap}\n")
+    parts.append(f"Working memory:\n{memory.working_memory or '(empty)'}\n")
+    parts.append(f"Findings so far:\n{memory.findings_summary()}\n")
+    parts.append(f"Recent observations:\n{memory.recent_observations(2)}")
+    return "\n".join(parts)
+
+
+def _active_bootstrap_context(memory: HuntMemory) -> str:
+    """Only inject bootstrap guidance on the first step to cap token cost."""
+    if int(getattr(memory, "step_count", 0) or 0) > 0:
+        return ""
+    return str(getattr(memory, "bootstrap_context", "") or "").strip()
+
+
+def _build_agent_bootstrap_context(
+    domain: str,
+    *,
+    repo_root: str = "",
+    memory_dir: str = "",
+) -> str:
+    """Build a concise runtime bootstrap block from autopilot/resume state."""
+    try:
+        from tools.autopilot_state import build_autopilot_state
+
+        resolved_repo_root = repo_root or _h().BASE_DIR
+        resolved_memory_dir = memory_dir or str(default_memory_dir(resolved_repo_root))
+        state = build_autopilot_state(
+            resolved_repo_root,
+            domain,
+            memory_dir=resolved_memory_dir,
+        )
+    except Exception:
+        return ""
+
+    lines = []
+    next_action = str(state.get("next_action", "") or "").strip()
+    if next_action:
+        lines.append(f"Next action hint: {next_action}")
+
+    guard_hint = str(state.get("guard_hint", "") or "").strip()
+    if guard_hint:
+        lines.append(f"Guard hint: {guard_hint}")
+
+    guard_status = state.get("guard_status") or {}
+    tripped_hosts = [item for item in guard_status.get("tripped_hosts", []) if item.get("host")]
+    if tripped_hosts:
+        blocked = ", ".join(
+            f"{item['host']} ({float(item.get('remaining_seconds', 0.0) or 0.0):.1f}s)"
+            for item in tripped_hosts[:3]
+        )
+        lines.append(f"Avoid now: {blocked}")
+
+    resume_targets = [item for item in state.get("resume_targets", []) if item]
+    if resume_targets:
+        lines.append(f"Resume targets: {', '.join(resume_targets[:3])}")
+
+    summary = state.get("resume_summary") or {}
+    latest_session = summary.get("latest_session_summary") or {}
+    vuln_classes = [item for item in latest_session.get("vuln_classes", []) if item]
+    if vuln_classes:
+        lines.append(f"Last vuln classes: {', '.join(vuln_classes[:4])}")
+    if latest_session:
+        lines.append(f"Last session findings: {int(latest_session.get('findings_count', 0) or 0)}")
+
+    recommended_targets = state.get("recommended_targets", []) or []
+    if recommended_targets:
+        top = recommended_targets[0]
+        top_url = str(top.get("url", "") or "").strip()
+        top_suggested = str(top.get("suggested", "") or "").strip()
+        if top.get("tripped"):
+            cooldown = float(top.get("remaining_seconds", 0.0) or 0.0)
+            if top_url:
+                lines.append(f"Top ranked target cooling down: {top_url} ({cooldown:.1f}s)")
+        elif top_url and top_suggested:
+            lines.append(f"Top ready target: {top_url} ({top_suggested})")
+        elif top_url:
+            lines.append(f"Top ready target: {top_url}")
+
+    if not lines:
+        return ""
+
+    return "## Resume / autopilot bootstrap\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def _session_summary_vuln_classes_from_agent(memory: HuntMemory) -> list[str]:
+    """Derive minimal vuln-class / scan-mode labels from agent activity."""
+    alias_map = {
+        "run_recon": "recon",
+        "run_vuln_scan": "vuln_scan",
+        "run_sqlmap_on_file": "sqlmap",
+        "run_sqlmap_targeted": "sqlmap",
+        "run_cve_hunt": "cve",
+        "run_zero_day_fuzzer": "zero_day",
+    }
+    ignored_steps = {
+        "check_tools",
+        "generate_reports",
+        "finish",
+        "read_autopilot_state",
+        "read_findings_summary",
+        "read_guard_status",
+        "read_recon_summary",
+        "read_repo_source_summary",
+        "read_resume_summary",
+        "read_surface_summary",
+        "remember_finding",
+        "run_intel",
+        "update_working_memory",
+    }
+
+    classes: list[str] = []
+
+    def _collect(label: str) -> None:
+        if not label or label in ignored_steps:
+            return
+        if label.startswith("read_"):
+            return
+        if label in alias_map:
+            classes.append(alias_map[label])
+            return
+        if label.startswith("run_"):
+            classes.append(label.removeprefix("run_"))
+
+    for step in dict.fromkeys(memory.completed_steps):
+        _collect(str(step))
+
+    if not classes:
+        for finding in memory.findings_log:
+            _collect(str(finding.get("tool", "")))
+
+    return list(dict.fromkeys(classes))
+
+
+def _session_summary_profile_endpoints(profile: dict[str, Any]) -> list[str]:
+    """Resolve tested endpoints from target profile with findings fallback."""
+    endpoints = []
+    if isinstance(profile, dict):
+        endpoints.extend(str(item).strip() for item in profile.get("tested_endpoints", []) if str(item).strip())
+        if not endpoints:
+            for finding in profile.get("findings", []):
+                endpoint = str(finding.get("endpoint", "")).strip()
+                if endpoint:
+                    endpoints.append(endpoint)
+    return list(dict.fromkeys(endpoints))
+
+
+def _session_summary_vuln_classes_from_profile(profile: dict[str, Any]) -> list[str]:
+    """Resolve remembered vuln classes from persisted target profile findings."""
+    classes = []
+    if isinstance(profile, dict):
+        for finding in profile.get("findings", []):
+            vuln_class = str(finding.get("vuln_class", "")).strip().lower()
+            if vuln_class:
+                classes.append(vuln_class)
+    return list(dict.fromkeys(classes))
+
+
+def _auto_log_agent_session_summary(domain: str, memory: HuntMemory, session_id: str | None) -> None:
+    """Auto-log a non-fatal session summary for agent-driven runs."""
+    try:
+        memory_dir = default_memory_dir(_h().BASE_DIR)
+        profile = load_target_profile(memory_dir, domain) or {}
+        endpoints_tested = _session_summary_profile_endpoints(profile)
+        remembered_findings = profile.get("findings", []) if isinstance(profile, dict) else []
+        vuln_classes = list(
+            dict.fromkeys(
+                _session_summary_vuln_classes_from_agent(memory)
+                + _session_summary_vuln_classes_from_profile(profile)
+            )
+        )
+        journal = HuntJournal(Path(memory_dir) / "journal.jsonl")
+        journal.log_session_summary(
+            target=domain,
+            action="hunt",
+            endpoints_tested=endpoints_tested,
+            vuln_classes_tried=vuln_classes,
+            findings_count=max(len(memory.findings_log), len(remembered_findings)),
+            session_id=session_id,
+        )
+    except Exception as exc:
+        print(f"{YELLOW}[Agent] Auto session memory failed (non-fatal): {exc}{NC}", flush=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Public entry point  (called by hunt.py --agent)
+#  Public entry point  (called by tools/hunt.py --agent)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def run_agent_hunt(
@@ -1418,12 +2484,16 @@ def run_agent_hunt(
     model: str | None = None,
     resume_session_id: str | None = None,
     use_langgraph: bool = False,
+    ctf_mode: bool | None = None,
+    autopilot_mode: str = "paranoid",
 ) -> dict:
     """
     Main entry point for agent-driven autonomous hunting.
-    Called by hunt.py when --agent flag is passed.
+    Called by tools/hunt.py when --agent flag is passed.
     """
     h = _h()
+    ctf_mode = _resolve_ctf_mode(ctf_mode)
+    autopilot_mode = _normalize_autopilot_mode(autopilot_mode)
 
     # ── Resolve session ───────────────────────────────────────────────────
     session_id, recon_dir = h._activate_recon_session(
@@ -1435,9 +2505,18 @@ def run_agent_hunt(
     session_file = os.path.join(session_dir, "agent_session.json")
 
     print(f"{GREEN}[Agent] Session: {session_id} → {recon_dir}{NC}", flush=True)
+    print(f"{DIM}[Agent] Checkpoint mode: {autopilot_mode}{NC}", flush=True)
+    if ctf_mode:
+        print(f"{YELLOW}[Agent] CTF mode enabled — treating provided target as local practice scope.{NC}", flush=True)
 
     # ── Init memory + dispatcher ──────────────────────────────────────────
     memory     = HuntMemory(session_file)
+    base_dir = getattr(h, "BASE_DIR", os.getcwd())
+    memory.bootstrap_context = _build_agent_bootstrap_context(
+        domain,
+        repo_root=base_dir,
+        memory_dir=str(default_memory_dir(base_dir)),
+    )
     dispatcher = ToolDispatcher(
         domain, memory,
         scope_lock=scope_lock,
@@ -1450,24 +2529,32 @@ def run_agent_hunt(
         print(f"{GREEN}[Agent] Using real LangGraph backend.{NC}", flush=True)
         picked_model = model or (_pick_model() if _BRAIN_OK else None) or "qwen2.5:32b"
         try:
-            graph   = build_langgraph_agent(domain, dispatcher, memory, picked_model, max_steps)
+            graph   = build_langgraph_agent(
+                domain,
+                dispatcher,
+                memory,
+                picked_model,
+                max_steps,
+                ctf_mode=ctf_mode,
+                autopilot_mode=autopilot_mode,
+            )
             initial = {"messages": [HumanMessage(content=f"Hunt {domain}. Begin.")]}
             result_state = graph.invoke(initial, config={"recursion_limit": max_steps * 2})
+            _auto_log_agent_session_summary(domain, memory, session_id)
             return {
                 "domain":          domain,
                 "success":         True,
                 "model":           picked_model,
                 "backend":         "langgraph",
+                "ctf_mode":        ctf_mode,
+                "autopilot_mode":  autopilot_mode,
                 "steps":           memory.step_count,
                 "completed_steps": list(dict.fromkeys(memory.completed_steps)),
                 "reports":         len(memory.findings_log),
                 "findings":        len(memory.findings_log),
                 "session_file":    session_file,
                 "working_memory":  memory.working_memory,
-                **{step: (step in memory.completed_steps)
-                   for step in ("recon", "scan", "js_analysis", "secret_hunt",
-                                "param_discovery", "api_fuzz", "cors", "cms_exploit",
-                                "rce_scan", "sqlmap", "jwt_audit")},
+                **_phase_flags(memory.completed_steps),
             }
         except Exception as e:
             print(f"{YELLOW}[Agent] LangGraph error: {e} — falling back to built-in{NC}",
@@ -1489,14 +2576,19 @@ def run_agent_hunt(
         time_budget_hours = time_budget_hours,
         model       = model,
         tracer      = tracer,
+        ctf_mode    = ctf_mode,
+        autopilot_mode = autopilot_mode,
     )
     agent.bump_file = bump_path
 
     result = agent.run()
     tracer.close()
+    _auto_log_agent_session_summary(domain, memory, session_id)
     result["backend"]    = "builtin-react"
     result["trace_path"] = log_path
     result["bump_path"]  = bump_path
+    result["ctf_mode"]   = ctf_mode
+    result["autopilot_mode"] = autopilot_mode
     return result
 
 
@@ -1564,17 +2656,21 @@ Examples:
         parser.print_help()
         sys.exit(1)
 
-    result = run_agent_hunt(
-        args.target,
-        scope_lock=args.scope_lock,
-        max_urls=args.max_urls,
-        max_steps=args.max_steps,
-        time_budget_hours=args.time,
-        cookies=args.cookie,
-        model=args.model,
-        resume_session_id=args.resume,
-        use_langgraph=args.langgraph,
-    )
+    try:
+        result = run_agent_hunt(
+            args.target,
+            scope_lock=args.scope_lock,
+            max_urls=args.max_urls,
+            max_steps=args.max_steps,
+            time_budget_hours=args.time,
+            cookies=args.cookie,
+            model=args.model,
+            resume_session_id=args.resume,
+            use_langgraph=args.langgraph,
+        )
+    except RuntimeError as exc:
+        print(f"{RED}[Agent] {exc}{NC}")
+        sys.exit(1)
 
     print(f"\n{BOLD}{'═'*60}{NC}")
     print(f"{BOLD}Hunt Result: {result['domain']}{NC}")

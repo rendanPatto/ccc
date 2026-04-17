@@ -1,4 +1,5 @@
 {
+  "ctf_mode": false,
   "chaos_api_key": "YOUR_PROJECTDISCOVERY_CHAOS_API_KEY",
   "h1_api_token": "YOUR_HACKERONE_API_TOKEN",
   "output_dir": "./findings",

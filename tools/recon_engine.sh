@@ -19,6 +19,7 @@ log_warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 log_info()  { echo -e "${CYAN}[*]${NC} $1"; }
 log_step()  { echo -e "    ${CYAN}[>]${NC} $1"; }
 log_done()  { echo -e "    ${GREEN}[✓]${NC} $1"; }
+log_vuln()  { echo -e "${RED}[VULN]${NC} $1"; }
 
 TARGET="${1:?Usage: $0 <target-domain> [--quick]}"
 QUICK_MODE="${2:-}"
@@ -92,7 +93,7 @@ curl -s "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=o
 log_done "wayback: $(wc -l < "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || echo 0) subdomains"
 
 # Merge and deduplicate all subdomains
-cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt"
+cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt" || true
 TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
 log_ok "Total unique subdomains: $TOTAL_SUBS"
 
@@ -269,7 +270,7 @@ if command -v ffuf &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
                 -timeout 10 \
                 -o "$RECON_DIR/dirs/ffuf_${domain}.json" \
                 -of json 2>/dev/null || true
-            ((FUZZ_COUNT++))
+            FUZZ_COUNT=$((FUZZ_COUNT + 1))
         done < "$RECON_DIR/live/urls.txt"
 
         log_done "Directory fuzzing complete ($FUZZ_COUNT hosts)"
@@ -309,7 +310,7 @@ if [ -s "$RECON_DIR/live/urls.txt" ]; then
         for path in "${CONFIG_PATHS[@]}"; do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "${base_url}${path}" 2>/dev/null || echo "000")
             if [ "$STATUS" = "200" ]; then
-                CONTENT_TYPE=$(curl -sI --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1)
+                CONTENT_TYPE=$(curl -sI --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)
                 # Only flag if it returns JS/JSON/text (not HTML error pages)
                 if echo "$CONTENT_TYPE" | grep -qiE '(javascript|json|text/plain)'; then
                     echo "[EXPOSED] ${base_url}${path}" >> "$RECON_DIR/exposure/config_files.txt"

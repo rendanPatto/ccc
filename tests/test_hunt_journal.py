@@ -1,11 +1,11 @@
-"""Tests for memory/hunt_journal.py — write, read, corrupted, concurrent, empty."""
+"""Tests for memory/hunt_journal.py — write, read, corrupted, concurrent, empty, session summary."""
 
 import json
 import threading
 import pytest
 
 from memory.hunt_journal import HuntJournal
-from memory.schemas import SchemaError, CURRENT_SCHEMA_VERSION
+from memory.schemas import SchemaError, CURRENT_SCHEMA_VERSION, make_session_summary_entry
 
 
 class TestJournalWrite:
@@ -154,3 +154,138 @@ class TestJournalConcurrency:
 
         entries = journal.read_all()
         assert len(entries) == num_threads
+
+
+class TestSessionSummarySchema:
+
+    def test_make_session_summary_entry_basic(self):
+        entry = make_session_summary_entry(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=["/api/users/1", "/api/orders/2"],
+            vuln_classes_tried=["idor", "ssrf"],
+            findings_count=1,
+        )
+        assert entry["target"] == "target.com"
+        assert entry["action"] == "hunt"
+        assert entry["vuln_class"] == "session_summary"
+        assert entry["result"] == "informational"
+        assert "auto_logged" in entry["tags"]
+        assert "session_summary" in entry["tags"]
+        assert "has_findings" in entry["tags"]
+        assert entry["schema_version"] == CURRENT_SCHEMA_VERSION
+
+    def test_make_session_summary_no_findings(self):
+        entry = make_session_summary_entry(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=["/api/test"],
+            vuln_classes_tried=["xss"],
+            findings_count=0,
+        )
+        assert "has_findings" not in entry["tags"]
+        assert entry["result"] == "informational"
+
+    def test_make_session_summary_with_session_id(self):
+        entry = make_session_summary_entry(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=[],
+            vuln_classes_tried=[],
+            findings_count=0,
+            session_id="autopilot-2026-04-16-001",
+        )
+        assert "autopilot-2026-04-16-001" in entry["notes"]
+
+    def test_make_session_summary_empty_lists(self):
+        entry = make_session_summary_entry(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=[],
+            vuln_classes_tried=[],
+            findings_count=0,
+        )
+        assert entry["endpoint"] == "none"
+        assert "none" in entry["notes"]
+
+    def test_make_session_summary_invalid_action_falls_back(self):
+        entry = make_session_summary_entry(
+            target="target.com",
+            action="bad_action",
+            endpoints_tested=[],
+            vuln_classes_tried=[],
+            findings_count=0,
+        )
+        assert entry["action"] == "hunt"
+
+    def test_make_session_summary_long_endpoint_list_truncated(self):
+        endpoints = [f"/api/endpoint/{i}" for i in range(50)]
+        entry = make_session_summary_entry(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=endpoints,
+            vuln_classes_tried=["idor"],
+            findings_count=0,
+        )
+        assert len(entry["endpoint"]) <= 200
+
+
+class TestLogSessionSummary:
+
+    def test_log_session_summary_writes_entry(self, journal_path):
+        journal = HuntJournal(journal_path)
+        journal.log_session_summary(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=["/api/users/1"],
+            vuln_classes_tried=["idor"],
+            findings_count=2,
+        )
+        entries = journal.read_all()
+        assert len(entries) == 1
+        assert entries[0]["vuln_class"] == "session_summary"
+        assert entries[0]["result"] == "informational"
+        assert "auto_logged" in entries[0]["tags"]
+
+    def test_log_session_summary_is_non_fatal_on_bad_target(self, journal_path, capsys):
+        journal = HuntJournal(journal_path)
+        journal.log_session_summary(
+            target="",
+            action="hunt",
+            endpoints_tested=[],
+            vuln_classes_tried=[],
+            findings_count=0,
+        )
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert not journal_path.exists()
+
+    def test_log_session_summary_coexists_with_manual_entries(self, journal_path, sample_journal_entry):
+        journal = HuntJournal(journal_path)
+        journal.append(sample_journal_entry)
+        journal.log_session_summary(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=["/api/users/1"],
+            vuln_classes_tried=["idor"],
+            findings_count=1,
+        )
+        entries = journal.read_all()
+        assert len(entries) == 2
+        manual = [e for e in entries if e["vuln_class"] != "session_summary"]
+        auto = [e for e in entries if e["vuln_class"] == "session_summary"]
+        assert len(manual) == 1
+        assert len(auto) == 1
+
+    def test_query_can_find_session_summary_entries(self, journal_path):
+        journal = HuntJournal(journal_path)
+        journal.log_session_summary(
+            target="target.com",
+            action="hunt",
+            endpoints_tested=["/api/users/1"],
+            vuln_classes_tried=["idor"],
+            findings_count=0,
+        )
+        results = journal.query(target="target.com", vuln_class="session_summary")
+        assert len(results) == 1
+        assert results[0]["result"] == "informational"

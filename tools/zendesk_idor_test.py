@@ -18,17 +18,23 @@ import json
 import requests
 from urllib.parse import urljoin
 
+__test__ = False
+
 # --- Config ---
 SUBDOMAIN = os.environ.get("ZENDESK_SUBDOMAIN", "")
 EMAIL = os.environ.get("ZENDESK_EMAIL", "")
 API_TOKEN = os.environ.get("ZENDESK_API_TOKEN", "")
 
-if not all([SUBDOMAIN, EMAIL, API_TOKEN]):
-    print("ERROR: Set ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN env vars")
-    sys.exit(1)
-
 BASE_URL = f"https://{SUBDOMAIN}.zendesk.com"
 AUTH = (f"{EMAIL}/token", API_TOKEN)
+
+
+def require_credentials() -> bool:
+    """Return whether required Zendesk credentials are present."""
+    if all([SUBDOMAIN, EMAIL, API_TOKEN]):
+        return True
+    print("ERROR: Set ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN env vars")
+    return False
 
 # --- Helpers ---
 def api_get(path, auth=True, params=None):
@@ -292,6 +298,9 @@ def test_webhook_ssrf():
 
 # === MAIN ===
 if __name__ == "__main__":
+    if not require_credentials():
+        sys.exit(1)
+
     print(f"Zendesk IDOR/Access Control Tester")
     print(f"Target: {BASE_URL}")
     print(f"Auth: {EMAIL}")

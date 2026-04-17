@@ -9,6 +9,89 @@ Root cause, pattern, bypass table, chaining opportunity, real paid examples.
 
 ---
 
+## API HUNTING PLAYBOOK
+> Use this when the target exposes REST, GraphQL, SOAP, mobile APIs, or any documented `/api/` surface.
+
+### Step 1: Classify the API
+
+```text
+REST      -> versioned routes, JSON bodies, resource IDs
+GraphQL   -> single endpoint, schema, node(id), mutations
+SOAP/XML  -> XML body, action headers, parser edge cases
+Mobile    -> old versions, alternate auth, hidden routes
+```
+
+### Step 2: Map Before Fuzzing
+
+Start with documented or leaked surface:
+
+```text
+1. /swagger.json
+2. /openapi.json
+3. /api-docs
+4. /v1/api-docs
+5. mobile/web traffic diff
+6. JS bundles exposing internal API paths
+```
+
+### Step 3: Split Trust Boundaries
+
+Never assume these share the same security:
+
+```text
+web API != mobile API
+/v1 != /v2 != /v3
+read route != write route
+browser flow != direct API call
+```
+
+### Step 4: Object-Level Auth Matrix
+
+Run this matrix whenever you find a user-controlled object ID:
+
+| Check | Why it pays |
+|---|---|
+| Victim ID with attacker token | Basic IDOR / BOLA |
+| Same path, different verb | GET protected, DELETE/PATCH not |
+| Version diff | Old routes often miss new auth middleware |
+| Duplicate params | Parser ambiguity / HPP |
+| Array/object wrap | Type confusion around IDs |
+| GraphQL `node(id)` | Per-object auth gaps |
+
+### Step 5: Transport / Parser Diff
+
+Change one assumption at a time:
+
+```text
+JSON -> XML -> form-urlencoded
+GET -> POST -> PUT -> PATCH -> DELETE
+single GraphQL op -> batched ops
+browser request -> raw API request without frontend state
+```
+
+### Step 6: Prioritize by API Type
+
+| Surface | First three checks |
+|---|---|
+| REST | IDOR, method tampering, version diff |
+| GraphQL | introspection, `node(id)`, mutation auth |
+| SOAP/XML | XXE, parser confusion, auth on alternate actions |
+| Mobile API | hidden routes, weaker auth, stale versions |
+
+### Step 7: Escalate Fast
+
+```text
+Read-only IDOR -> write/delete on same object
+Auth bypass on one route -> sibling routes in same controller
+Swagger docs -> admin/export/debug endpoints
+GraphQL schema -> privileged mutations / bulk queries
+```
+
+For bug-class-specific payloads and escalation paths, continue with the
+matching sections below (IDOR, auth bypass, GraphQL, SSRF, file upload, etc.).
+
+---
+
 ## 1. IDOR — INSECURE DIRECT OBJECT REFERENCE
 > #1 most paid web2 class — 30% of all submissions that get paid.
 

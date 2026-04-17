@@ -118,6 +118,21 @@ class TestVulnClassFiltering:
         assert sc.is_vuln_class_allowed("DOS") is False
 
 
+class TestCtfUnrestrictedMode:
+
+    def test_unrestricted_allows_private_ip(self):
+        sc = ScopeChecker([], unrestricted=True)
+        assert sc.is_in_scope("https://127.0.0.1:8080/admin") is True
+
+    def test_unrestricted_allows_arbitrary_domain(self):
+        sc = ScopeChecker([], unrestricted=True)
+        assert sc.is_in_scope("https://evil.com/api") is True
+
+    def test_unrestricted_ignores_excluded_vuln_class(self):
+        sc = ScopeChecker([], excluded_classes=["dos"], unrestricted=True)
+        assert sc.is_vuln_class_allowed("dos") is True
+
+
 class TestFilterUrls:
 
     def test_split_urls(self, scope_domains, scope_excluded):

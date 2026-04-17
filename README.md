@@ -29,7 +29,7 @@
 <br>
 
 ```
-  13 commands  ·  7 AI agents  ·  8 skill domains
+  15 commands  ·  8 AI agents  ·  9 skill domains
   20 web2 vuln classes  ·  10 web3 bug classes
   Burp MCP  ·  HackerOne MCP  ·  Autonomous Mode
 ```
@@ -85,15 +85,20 @@ Claude Bug Bounty is an **agent harness** — not just scripts. It reasons about
 git clone https://github.com/shuvonsec/claude-bug-bounty.git
 cd claude-bug-bounty
 chmod +x install.sh && ./install.sh
+# optional: create repo-local runtime config
+cp config.example.json config.json
+# then set "ctf_mode": true for CTF / lab / local targets
+# ctf_mode disables scope/request-guard restrictions; audit logging still stays on
 ```
 
 **Step 2 — Hunt**
 
 ```bash
-claude                          # Start Claude Code
+claude                          # Start Claude Code from this repo root
 
 /recon target.com               # Discover attack surface
 /hunt target.com                # Test for vulnerabilities
+/source-hunt target.com --repo-path /path/to/repo
 /validate                       # Check finding before writing
 /report                         # Generate submission-ready report
 ```
@@ -112,8 +117,13 @@ claude                          # Start Claude Code
 > ```bash
 > python3 tools/hunt.py --target target.com
 > ./tools/recon_engine.sh target.com
+> python3 tools/source_hunt.py --target target.com --repo-path /path/to/repo
 > python3 tools/intel_engine.py --target target.com --tech nextjs
 > ```
+
+> **Repo-local note:** launch Claude Code inside this repository. The slash commands reference local `tools/`, `memory/`, and optional `config.json`.
+>
+> **CTF note:** with `ctf_mode: true`, helper guards become unrestricted — no scope allowlist, method gate, breaker block, or rate-limit wait. Request/audit state is still recorded.
 
 <br>
 
@@ -165,6 +175,7 @@ Each stage feeds the next. Claude orchestrates everything, or you run any stage 
 |:---|:---|
 | `/recon target.com` | Full recon — subdomains, live hosts, URLs, nuclei scan |
 | `/hunt target.com` | Active testing — scope check, tech detect, test highest-ROI bugs |
+| `/source-hunt target.com` | Source repo scan — secrets, risky configs, GitHub Actions / CI issues |
 | `/validate` | 7-Question Gate + 4 gates — PASS / KILL / DOWNGRADE / CHAIN REQUIRED |
 | `/report` | Submission-ready report for H1/Bugcrowd/Intigriti/Immunefi |
 | `/chain` | Find B and C from bug A — systematic exploit chaining |
@@ -224,6 +235,8 @@ Three checkpoint modes:
 - `--yolo` — minimal stops (still requires approval for report submissions)
 
 Built-in safety: circuit breaker stops hammering hosts after consecutive failures, per-host rate limiting, every request logged to `audit.jsonl`.
+
+In `ctf_mode`, those helper controls switch to **audit-only** behavior: requests are still logged, but scope/method/breaker/rate-limit enforcement is disabled.
 
 </details>
 
@@ -394,7 +407,7 @@ Wraps `learn.py` + HackerOne MCP + hunt memory:
 |:---|:---|
 | `hunt_journal.py` | Append-only JSONL hunt log (concurrent-safe via `fcntl.flock`) |
 | `pattern_db.py` | Cross-target pattern DB — matches by vuln class + tech stack |
-| `audit_log.py` | Every outbound request logged + per-host rate limiter + circuit breaker |
+| `audit_log.py` | Every outbound request logged + per-host rate limiter/circuit breaker in bug bounty mode, audit-only in `ctf_mode` |
 | `schemas.py` | Schema validation for all entry types (versioned) |
 
 </details>
@@ -405,10 +418,10 @@ Wraps `learn.py` + HackerOne MCP + hunt memory:
 
 ```
 claude-bug-bounty/
-├── skills/                     8 skill domains (SKILL.md files)
-├── commands/                   13 slash commands
-├── agents/                     7 specialized AI agents
-├── tools/                      21 Python/shell tools
+├── skills/                     9 skill domains (SKILL.md files)
+├── commands/                   15 slash commands
+├── agents/                     8 specialized AI agents
+├── tools/                      36 Python/shell tools
 ├── memory/                     Persistent hunt memory system
 ├── mcp/                        MCP server integrations
 │   ├── burp-mcp-client/        Burp Suite proxy

@@ -22,16 +22,19 @@ class ScopeChecker:
         domains: list[str],
         excluded_domains: list[str] | None = None,
         excluded_classes: list[str] | None = None,
+        unrestricted: bool = False,
     ):
         """
         Args:
             domains: Allowlist patterns like ["*.target.com", "api.target.com"]
             excluded_domains: Blocklist patterns like ["blog.target.com"]
             excluded_classes: Vuln classes excluded by program (e.g., ["dos"])
+            unrestricted: If true, disable all scope/class restrictions.
         """
         self.domains = [d.lower() for d in domains]
         self.excluded_domains = [d.lower() for d in (excluded_domains or [])]
         self.excluded_classes = [c.lower() for c in (excluded_classes or [])]
+        self.unrestricted = bool(unrestricted)
 
     def is_in_scope(self, url: str) -> bool:
         """Check if a URL's hostname is in scope.
@@ -40,6 +43,9 @@ class ScopeChecker:
             True if the hostname matches an allowed pattern and is not excluded.
             False otherwise (including for malformed URLs, empty input, IP addresses).
         """
+        if self.unrestricted:
+            return bool(url and isinstance(url, str))
+
         if not url or not isinstance(url, str):
             return False
 
@@ -82,6 +88,8 @@ class ScopeChecker:
 
     def is_vuln_class_allowed(self, vuln_class: str) -> bool:
         """Check if a vulnerability class is allowed by the program."""
+        if self.unrestricted:
+            return True
         return vuln_class.lower() not in self.excluded_classes
 
     def filter_urls(self, urls: list[str]) -> tuple[list[str], list[str]]:
