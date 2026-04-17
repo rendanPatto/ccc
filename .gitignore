@@ -30,3 +30,4 @@ venv/
 *.out
 nmap-output/
 .ace-tool/
+.worktrees/
