@@ -108,7 +108,7 @@ claude                          # Start Claude Code from this repo root
 ```bash
 /autopilot target.com --normal  # Full autonomous hunt loop
 /intel target.com               # Fetch CVE + disclosure intel
-/resume target.com              # Pick up where you left off
+/pickup target.com              # Pick up where you left off
 ```
 
 <br>
@@ -189,7 +189,7 @@ Each stage feeds the next. Claude orchestrates everything, or you run any stage 
 |:---|:---|
 | `/autopilot target.com` | Full autonomous hunt loop with safety checkpoints |
 | `/surface target.com` | AI-ranked attack surface from recon + memory |
-| `/resume target.com` | Resume previous hunt — shows what's untested |
+| `/pickup target.com` | Continue previous hunt — shows what's untested |
 | `/remember` | Save finding or pattern to persistent memory |
 | `/intel target.com` | CVEs + disclosures cross-referenced with your hunt history |
 

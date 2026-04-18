@@ -33,10 +33,13 @@ This repo is a Claude Code plugin for professional bug bounty hunting across Hac
 | `/web3-audit` | `/web3-audit <contract.sol>` — smart contract audit |
 | `/autopilot` | `/autopilot target.com --normal` — autonomous hunt loop |
 | `/surface` | `/surface target.com` — ranked attack surface |
-| `/resume` | `/resume target.com` — pick up previous hunt |
+| `/pickup` | `/pickup target.com` — continue previous hunt |
 | `/remember` | `/remember` — log finding to hunt memory |
 | `/intel` | `/intel target.com` — fetch CVE + disclosure intel |
 | `/token-scan` | `/token-scan <contract>` — meme coin/token rug pull scanner |
+
+
+> `/resume` is a reserved Claude Code command — use `/pickup` to continue a previous hunt.
 
 ### Agents (8 specialized agents)
 

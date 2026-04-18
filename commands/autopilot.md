@@ -15,7 +15,7 @@ When `ctf_mode: true` is set in `config.json`:
 - `request_guard.py` becomes audit-only: no scope allowlist enforcement, no unsafe-method gate, no breaker block, and no rate-limit wait
 
 In Claude Code, this runs as an autonomous agent workflow backed by helper tools
-like `scope_checker.py`, hunt-memory modules, and the `/remember` `/resume`
+like `scope_checker.py`, hunt-memory modules, and the `/remember`, `/pickup`,
 `/surface` helper scripts.
 
 Operational rule: prefer starting with `python3 tools/autopilot_state.py --target <target>`
@@ -87,5 +87,5 @@ In `ctf_mode`, this is optional because request-guard enforcement is disabled.
 ## After Autopilot
 
 - Run `/remember` to log successful patterns to hunt memory
-- Run `/resume target.com` next time to pick up where you left off
+- Run `/pickup target.com` next time to pick up where you left off
 - Check `hunt-memory/audit.jsonl` for a full request log
