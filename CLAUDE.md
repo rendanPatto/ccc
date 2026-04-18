@@ -18,7 +18,7 @@ This repo is a Claude Code plugin for professional bug bounty hunting across Hac
 | `skills/report-writing/` | H1/Bugcrowd/Intigriti/Immunefi report templates, CVSS 3.1, human tone |
 | `skills/triage-validation/` | 7-Question Gate, 4 gates, never-submit list, conditionally valid table |
 
-### Commands (15 slash commands)
+### Commands (core slash commands + `/resume` compatibility page)
 
 | Command | Usage |
 |---|---|

@@ -29,7 +29,7 @@
 <br>
 
 ```
-  15 commands  ·  8 AI agents  ·  9 skill domains
+  Core slash commands + pickup/resume handoff docs  ·  8 AI agents  ·  9 skill domains
   20 web2 vuln classes  ·  10 web3 bug classes
   Burp MCP  ·  HackerOne MCP  ·  Autonomous Mode
 ```
@@ -419,7 +419,7 @@ Wraps `learn.py` + HackerOne MCP + hunt memory:
 ```
 claude-bug-bounty/
 ├── skills/                     9 skill domains (SKILL.md files)
-├── commands/                   15 slash commands
+├── commands/                   Command docs (includes `/pickup` + `/resume` compatibility page)
 ├── agents/                     8 specialized AI agents
 ├── tools/                      36 Python/shell tools
 ├── memory/                     Persistent hunt memory system
