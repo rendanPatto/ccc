@@ -166,9 +166,10 @@ def test_dispatch_resume_summary_reads_memory(tmp_hunt_dir, tmp_path):
     dispatcher = _build_dispatcher("target.com", tmp_path / "agent_session.json")
     output = dispatcher.dispatch("read_resume_summary", {"memory_dir": str(tmp_hunt_dir)})
 
-    assert "RESUME: target.com" in output
+    assert "PICKUP: target.com" in output
     assert "Untested Surface:" in output
     assert "/graphql" in output
+    assert "[r] Continue hunting untested endpoints" in output
 
 
 def test_dispatch_surface_summary_ranks_cached_recon(tmp_hunt_dir, tmp_path):
