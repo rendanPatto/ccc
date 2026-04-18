@@ -227,7 +227,7 @@ def format_resume_output(summary: dict | None, target: str) -> str:
         )
 
     lines = [
-        f"RESUME: {target}",
+        f"PICKUP: {target}",
         "═══════════════════════════════════════",
         "",
         "Hunt History:",
@@ -311,7 +311,7 @@ def format_resume_output(summary: dict | None, target: str) -> str:
     lines.extend([
         "",
         "Actions:",
-        "  [r] Resume hunting untested endpoints",
+        "  [r] Continue hunting untested endpoints",
         "  [n] Re-run recon first (surface may have changed)",
         "  [s] Show full hunt journal for this target",
     ])

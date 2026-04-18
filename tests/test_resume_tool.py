@@ -127,6 +127,7 @@ class TestResumeFormatting:
     def test_formats_missing_state(self):
         output = format_resume_output(None, "missing.com")
         assert "No previous hunt data for missing.com." in output
+        assert "Run /recon missing.com first, then /hunt missing.com." in output
 
     def test_formats_summary_output(self):
         summary = {
@@ -153,13 +154,14 @@ class TestResumeFormatting:
             },
         }
         output = format_resume_output(summary, "target.com")
-        assert "RESUME: target.com" in output
+        assert "PICKUP: target.com" in output
         assert "1 confirmed ($1500 total)" in output
         assert "2 endpoints from last recon" in output
         assert "alpha.com: id_swap [idor] ($800)" in output
         assert "Latest Session Snapshot:" in output
         assert "Session: sess-777" in output
         assert "Tried: recon, idor" in output
+        assert "[r] Continue hunting untested endpoints" in output
 
     def test_formats_recent_guard_blocks(self):
         summary = {
