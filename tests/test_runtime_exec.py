@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import shlex
 import signal
 import subprocess
+import sys
 
 import runtime_exec
+
+
+def _timeout_test_command() -> str:
+    script = (
+        "import sys, time; "
+        "print('hello', flush=True); "
+        "print('err', file=sys.stderr, flush=True); "
+        "time.sleep(30)"
+    )
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
 
 
 def test_spawn_uses_session_safe_popen_options_and_cwd(monkeypatch):
@@ -34,6 +46,7 @@ def test_spawn_uses_session_safe_popen_options_and_cwd(monkeypatch):
     assert "preexec_fn" not in captured["kwargs"]
 
 
+
 def test_run_shell_command_returns_combined_output(monkeypatch):
     class FakeProc:
         pid = 4242
@@ -49,6 +62,7 @@ def test_run_shell_command_returns_combined_output(monkeypatch):
 
     assert success is True
     assert output == "ok stdout\nwarn stderr\n"
+
 
 
 def test_run_shell_command_kills_process_group_on_timeout(monkeypatch):
@@ -76,6 +90,7 @@ def test_run_shell_command_kills_process_group_on_timeout(monkeypatch):
     assert "timed out after 5s" in output.lower()
     assert ("killpg", 9001, signal.SIGTERM) in events
     assert ("killpg", 9001, signal.SIGKILL) in events
+
 
 
 def test_run_shell_command_timeout_preserves_partial_and_cleanup_output(monkeypatch):
@@ -110,6 +125,7 @@ def test_run_shell_command_timeout_preserves_partial_and_cleanup_output(monkeypa
     assert "timed out after 2s" in output.lower()
 
 
+
 def test_run_shell_command_split_preserves_stdout_and_stderr(monkeypatch):
     class FakeProc:
         pid = 1337
@@ -126,6 +142,7 @@ def test_run_shell_command_split_preserves_stdout_and_stderr(monkeypatch):
     assert success is False
     assert stdout == "out"
     assert stderr == "err"
+
 
 
 def test_run_shell_command_split_kills_process_group_on_timeout(monkeypatch):
@@ -154,6 +171,7 @@ def test_run_shell_command_split_kills_process_group_on_timeout(monkeypatch):
     assert "timed out after 4s" in stderr.lower()
     assert ("killpg", 9003, signal.SIGTERM) in events
     assert ("killpg", 9003, signal.SIGKILL) in events
+
 
 
 def test_run_shell_command_split_timeout_preserves_partial_stdout_and_stderr(monkeypatch):
@@ -185,3 +203,23 @@ def test_run_shell_command_split_timeout_preserves_partial_stdout_and_stderr(mon
     assert "partial err" in stderr
     assert "cleanup err" in stderr
     assert "timed out after 6s" in stderr.lower()
+
+
+
+def test_run_shell_command_timeout_real_subprocess_does_not_duplicate_output():
+    success, output = runtime_exec.run_shell_command(_timeout_test_command(), timeout=0.1)
+
+    assert success is False
+    assert output.count("hello\n") == 1
+    assert output.count("err\n") == 1
+    assert "command timed out after 0.1s" in output.lower()
+
+
+
+def test_run_shell_command_split_timeout_real_subprocess_does_not_duplicate_output():
+    success, stdout, stderr = runtime_exec.run_shell_command_split(_timeout_test_command(), timeout=0.1)
+
+    assert success is False
+    assert stdout == "hello\n"
+    assert stderr.count("err\n") == 1
+    assert "command timed out after 0.1s" in stderr.lower()

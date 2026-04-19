@@ -26,7 +26,20 @@ def _append_message(stream: str, message: str) -> str:
     return stream + "\n" + message
 
 
-def _communicate_for(proc: subprocess.Popen[str], timeout: int) -> tuple[str, str, bool]:
+def _merge_streams(existing: str, new: str) -> str:
+    if not existing:
+        return new
+    if not new:
+        return existing
+
+    max_overlap = min(len(existing), len(new))
+    for overlap in range(max_overlap, 0, -1):
+        if existing.endswith(new[:overlap]):
+            return existing + new[overlap:]
+    return existing + new
+
+
+def _communicate_for(proc: subprocess.Popen[str], timeout: int | float) -> tuple[str, str, bool]:
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         return _to_text(stdout), _to_text(stderr), True
@@ -57,7 +70,7 @@ def _terminate_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
         return stdout, stderr
 
     kill_stdout, kill_stderr, _finished = _communicate_for(proc, TERMINATION_GRACE_SECONDS)
-    return stdout + kill_stdout, stderr + kill_stderr
+    return _merge_streams(stdout, kill_stdout), _merge_streams(stderr, kill_stderr)
 
 
 def _spawn(cmd: str, *, cwd: str | None = None) -> subprocess.Popen[str]:
@@ -72,7 +85,12 @@ def _spawn(cmd: str, *, cwd: str | None = None) -> subprocess.Popen[str]:
     )
 
 
-def _run_shell_command_split(cmd: str, *, cwd: str | None = None, timeout: int = 600) -> tuple[bool, str, str]:
+def _run_shell_command_split(
+    cmd: str,
+    *,
+    cwd: str | None = None,
+    timeout: int | float = 600,
+) -> tuple[bool, str, str]:
     proc = _spawn(cmd, cwd=cwd)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
@@ -81,21 +99,21 @@ def _run_shell_command_split(cmd: str, *, cwd: str | None = None, timeout: int =
         stdout = _to_text(exc.output)
         stderr = _to_text(exc.stderr)
         cleanup_stdout, cleanup_stderr = _terminate_process_group(proc)
-        stdout += cleanup_stdout
-        stderr += cleanup_stderr
+        stdout = _merge_streams(stdout, cleanup_stdout)
+        stderr = _merge_streams(stderr, cleanup_stderr)
         stderr = _append_message(stderr, f"Command timed out after {timeout}s")
         return False, stdout, stderr
     except Exception as exc:
         stdout = _to_text(getattr(exc, "output", None))
         stderr = _to_text(getattr(exc, "stderr", None))
         cleanup_stdout, cleanup_stderr = _terminate_process_group(proc)
-        stdout += cleanup_stdout
-        stderr += cleanup_stderr
+        stdout = _merge_streams(stdout, cleanup_stdout)
+        stderr = _merge_streams(stderr, cleanup_stderr)
         stderr = _append_message(stderr, str(exc))
         return False, stdout, stderr
 
 
-def run_shell_command(cmd: str, *, cwd: str | None = None, timeout: int = 600) -> tuple[bool, str]:
+def run_shell_command(cmd: str, *, cwd: str | None = None, timeout: int | float = 600) -> tuple[bool, str]:
     success, stdout, stderr = _run_shell_command_split(cmd, cwd=cwd, timeout=timeout)
     return success, stdout + stderr
 
@@ -104,6 +122,6 @@ def run_shell_command_split(
     cmd: str,
     *,
     cwd: str | None = None,
-    timeout: int = 600,
+    timeout: int | float = 600,
 ) -> tuple[bool, str, str]:
     return _run_shell_command_split(cmd, cwd=cwd, timeout=timeout)
