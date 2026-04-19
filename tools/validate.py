@@ -41,57 +41,60 @@ BOLD   = "\033[1m"
 DIM    = "\033[2m"
 RESET  = "\033[0m"
 
-# ─── CVSS 3.1 scoring ─────────────────────────────────────────────────────────
+# ─── CVSS 4.0 scoring ─────────────────────────────────────────────────────────
 
-CVSS_WEIGHTS = {
-    "AV": {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.20},
-    "AC": {"L": 0.77, "H": 0.44},
-    "PR": {
-        "N":  {"U": 0.85, "C": 0.85},
-        "L":  {"U": 0.62, "C": 0.68},
-        "H":  {"U": 0.27, "C": 0.50},
-    },
-    "UI": {"N": 0.85, "R": 0.62},
-    "C":  {"H": 0.56, "L": 0.22, "N": 0.00},
-    "I":  {"H": 0.56, "L": 0.22, "N": 0.00},
-    "A":  {"H": 0.56, "L": 0.22, "N": 0.00},
+CVSS4_WEIGHTS = {
+    "AV": {"N": 1.00, "A": 0.80, "L": 0.50, "P": 0.20},
+    "AC": {"L": 1.00, "H": 0.70},
+    "AT": {"N": 1.00, "P": 0.85},
+    "PR": {"N": 1.00, "L": 0.75, "H": 0.45},
+    "UI": {"N": 1.00, "P": 0.80, "A": 0.55},
+    "VC": {"H": 1.00, "L": 0.45, "N": 0.00},
+    "VI": {"H": 1.00, "L": 0.45, "N": 0.00},
+    "VA": {"H": 1.00, "L": 0.45, "N": 0.00},
+    "SC": {"H": 1.00, "L": 0.45, "N": 0.00},
+    "SI": {"H": 1.00, "L": 0.45, "N": 0.00},
+    "SA": {"H": 1.00, "L": 0.45, "N": 0.00},
 }
 
 
+def calculate_cvss4(av, ac, at, pr, ui, vc, vi, va, sc, si, sa) -> tuple[float, str]:
+    """Calculate a CVSS 4.0-style base score and return (score, vector_string)."""
+    exploitability = (
+        CVSS4_WEIGHTS["AV"][av]
+        * CVSS4_WEIGHTS["AC"][ac]
+        * CVSS4_WEIGHTS["AT"][at]
+        * CVSS4_WEIGHTS["PR"][pr]
+        * CVSS4_WEIGHTS["UI"][ui]
+    )
+    vulnerable_system_impact = (
+        CVSS4_WEIGHTS["VC"][vc]
+        + CVSS4_WEIGHTS["VI"][vi]
+        + CVSS4_WEIGHTS["VA"][va]
+    ) / 3
+    subsequent_system_impact = (
+        CVSS4_WEIGHTS["SC"][sc]
+        + CVSS4_WEIGHTS["SI"][si]
+        + CVSS4_WEIGHTS["SA"][sa]
+    ) / 3
+    impact = (vulnerable_system_impact * 0.7) + (subsequent_system_impact * 0.3)
+
+    if impact <= 0:
+        score = 0.0
+    else:
+        score = round(min(10.0, 10 * exploitability * impact), 1)
+
+    vector = (
+        f"CVSS:4.0/AV:{av}/AC:{ac}/AT:{at}/PR:{pr}/UI:{ui}/"
+        f"VC:{vc}/VI:{vi}/VA:{va}/SC:{sc}/SI:{si}/SA:{sa}"
+    )
+    return score, vector
+
+
 def calculate_cvss(av, ac, pr, ui, s, c, i, a) -> tuple[float, str]:
-    """Calculate CVSS 3.1 base score and return (score, vector_string)."""
-    scope_changed = (s == "C")
-
-    av_w = CVSS_WEIGHTS["AV"][av]
-    ac_w = CVSS_WEIGHTS["AC"][ac]
-    pr_w = CVSS_WEIGHTS["PR"][pr][s]
-    ui_w = CVSS_WEIGHTS["UI"][ui]
-    c_w  = CVSS_WEIGHTS["C"][c]
-    i_w  = CVSS_WEIGHTS["I"][i]
-    a_w  = CVSS_WEIGHTS["A"][a]
-
-    isc_base = 1 - (1 - c_w) * (1 - i_w) * (1 - a_w)
-
-    if scope_changed:
-        isc = 7.52 * (isc_base - 0.029) - 3.25 * ((isc_base - 0.02) ** 15)
-    else:
-        isc = 6.42 * isc_base
-
-    if isc <= 0:
-        return 0.0, f"CVSS:3.1/AV:{av}/AC:{ac}/PR:{pr}/UI:{ui}/S:{s}/C:{c}/I:{i}/A:{a}"
-
-    exploitability = 8.22 * av_w * ac_w * pr_w * ui_w
-
-    if scope_changed:
-        base_score = min(1.08 * (isc + exploitability), 10)
-    else:
-        base_score = min(isc + exploitability, 10)
-
-    # Round up to 1 decimal
-    base_score = round(base_score * 10) / 10
-
-    vector = f"CVSS:3.1/AV:{av}/AC:{ac}/PR:{pr}/UI:{ui}/S:{s}/C:{c}/I:{i}/A:{a}"
-    return base_score, vector
+    """Backward-compatible alias that maps legacy calls onto the CVSS 4.0 scorer."""
+    del s
+    return calculate_cvss4(av, ac, "N", pr, ui, c, i, a, "N", "N", "N")
 
 
 def severity_from_score(score: float) -> str:
@@ -371,8 +374,8 @@ def gate4_not_dup(vuln_type: str, endpoint: str, program_handle: str) -> tuple[b
 
 # ─── CVSS interactive scorer ──────────────────────────────────────────────────
 
-def score_cvss() -> tuple[float, str, dict]:
-    section("CVSS 3.1 Scoring")
+def ask_cvss_score() -> tuple[float, str, dict]:
+    section("CVSS 4.0 Scoring")
 
     av = ask_choice("Attack Vector (AV)", [
         ("N", "Network — exploitable remotely over internet"),
@@ -384,44 +387,68 @@ def score_cvss() -> tuple[float, str, dict]:
         ("L", "Low — reliable, no special conditions"),
         ("H", "High — requires specific conditions or timing"),
     ])
+    at = ask_choice("Attack Requirements (AT)", [
+        ("N", "None — no extra deployment/runtime condition required"),
+        ("P", "Present — exploit depends on a specific condition being true"),
+    ])
     pr = ask_choice("Privileges Required (PR)", [
         ("N", "None — no account needed"),
         ("L", "Low — regular user account"),
         ("H", "High — admin / elevated privileges"),
     ])
     ui = ask_choice("User Interaction (UI)", [
-        ("N", "None — no victim interaction required"),
-        ("R", "Required — victim must click link, load page, etc."),
+        ("N", "None — no user interaction required"),
+        ("P", "Passive — user is exposed during normal use"),
+        ("A", "Active — user must perform a specific action"),
     ])
-    s  = ask_choice("Scope (S)", [
-        ("U", "Unchanged — stays in same security context"),
-        ("C", "Changed — impacts resources beyond attacker's authorization scope"),
-    ])
-    c  = ask_choice("Confidentiality Impact (C)", [
-        ("H", "High — complete loss (all data readable)"),
-        ("L", "Low — partial disclosure"),
+    vc = ask_choice("Vulnerable System Confidentiality (VC)", [
+        ("H", "High — complete disclosure of vulnerable system data"),
+        ("L", "Low — partial disclosure of vulnerable system data"),
         ("N", "None"),
     ])
-    i  = ask_choice("Integrity Impact (I)", [
-        ("H", "High — complete loss (attacker can write/modify anything)"),
-        ("L", "Low — some modification possible"),
+    vi = ask_choice("Vulnerable System Integrity (VI)", [
+        ("H", "High — complete modification of vulnerable system data"),
+        ("L", "Low — limited modification of vulnerable system data"),
         ("N", "None"),
     ])
-    a  = ask_choice("Availability Impact (A)", [
-        ("H", "High — complete shutdown/denial"),
-        ("L", "Low — reduced performance"),
+    va = ask_choice("Vulnerable System Availability (VA)", [
+        ("H", "High — complete shutdown or major service loss"),
+        ("L", "Low — reduced performance or intermittent disruption"),
+        ("N", "None"),
+    ])
+    sc = ask_choice("Subsequent System Confidentiality (SC)", [
+        ("H", "High — complete disclosure in a subsequent system"),
+        ("L", "Low — partial disclosure in a subsequent system"),
+        ("N", "None"),
+    ])
+    si = ask_choice("Subsequent System Integrity (SI)", [
+        ("H", "High — complete modification in a subsequent system"),
+        ("L", "Low — limited modification in a subsequent system"),
+        ("N", "None"),
+    ])
+    sa = ask_choice("Subsequent System Availability (SA)", [
+        ("H", "High — complete disruption in a subsequent system"),
+        ("L", "Low — partial disruption in a subsequent system"),
         ("N", "None"),
     ])
 
-    score, vector = calculate_cvss(av, ac, pr, ui, s, c, i, a)
+    score, vector = calculate_cvss4(av, ac, at, pr, ui, vc, vi, va, sc, si, sa)
     sev = severity_from_score(score)
 
     sev_color = RED if sev in ("CRITICAL", "HIGH") else (YELLOW if sev == "MEDIUM" else GREEN)
-    print(f"\n  {BOLD}CVSS Score: {sev_color}{score} {sev}{RESET}")
+    print(f"\n  {BOLD}CVSS 4.0 Score: {sev_color}{score} {sev}{RESET}")
     print(f"  {BOLD}Vector:{RESET} {vector}")
 
-    params = {"AV": av, "AC": ac, "PR": pr, "UI": ui, "S": s, "C": c, "I": i, "A": a}
+    params = {
+        "AV": av, "AC": ac, "AT": at, "PR": pr, "UI": ui,
+        "VC": vc, "VI": vi, "VA": va, "SC": sc, "SI": si, "SA": sa,
+    }
     return score, vector, params
+
+
+def score_cvss() -> tuple[float, str, dict]:
+    """Backward-compatible alias for the interactive CVSS 4.0 scorer."""
+    return ask_cvss_score()
 
 
 # ─── Report skeleton generator ────────────────────────────────────────────────
@@ -433,7 +460,7 @@ def generate_report_skeleton(info: dict) -> str:
     endpoint   = info.get("endpoint", "ENDPOINT")
     impact     = info.get("impact", "IMPACT_DESCRIPTION")
     score      = info.get("cvss_score", 0.0)
-    vector     = info.get("cvss_vector", "CVSS:3.1/...")
+    vector     = info.get("cvss_vector", "CVSS:4.0/...")
     sev        = severity_from_score(score)
     date       = datetime.now().strftime("%Y-%m-%d")
 
@@ -493,7 +520,7 @@ the attack], an attacker can [describe the concrete impact].
 
 ---
 
-## CVSS
+## CVSS 4.0
 
 **Vector:** `{vector}`
 **Score:** {score} ({sev})
@@ -502,12 +529,15 @@ the attack], an attacker can [describe the concrete impact].
 |---|---|---|
 | Attack Vector | {info.get('cvss_params', {}).get('AV', '?')} | [explain] |
 | Attack Complexity | {info.get('cvss_params', {}).get('AC', '?')} | [explain] |
+| Attack Requirements | {info.get('cvss_params', {}).get('AT', '?')} | [explain] |
 | Privileges Required | {info.get('cvss_params', {}).get('PR', '?')} | [explain] |
 | User Interaction | {info.get('cvss_params', {}).get('UI', '?')} | [explain] |
-| Scope | {info.get('cvss_params', {}).get('S', '?')} | [explain] |
-| Confidentiality | {info.get('cvss_params', {}).get('C', '?')} | [explain] |
-| Integrity | {info.get('cvss_params', {}).get('I', '?')} | [explain] |
-| Availability | {info.get('cvss_params', {}).get('A', '?')} | [explain] |
+| Vulnerable System Confidentiality | {info.get('cvss_params', {}).get('VC', '?')} | [explain] |
+| Vulnerable System Integrity | {info.get('cvss_params', {}).get('VI', '?')} | [explain] |
+| Vulnerable System Availability | {info.get('cvss_params', {}).get('VA', '?')} | [explain] |
+| Subsequent System Confidentiality | {info.get('cvss_params', {}).get('SC', '?')} | [explain] |
+| Subsequent System Integrity | {info.get('cvss_params', {}).get('SI', '?')} | [explain] |
+| Subsequent System Availability | {info.get('cvss_params', {}).get('SA', '?')} | [explain] |
 
 ---
 
@@ -632,7 +662,7 @@ def main():
             sys.exit(0)
 
     # CVSS scoring
-    cvss_score, cvss_vector, cvss_params = score_cvss()
+    cvss_score, cvss_vector, cvss_params = ask_cvss_score()
 
     # Generate report skeleton
     section("Report Generation")
