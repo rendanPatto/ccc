@@ -151,7 +151,7 @@ claude                          # Start Claude Code from this repo root
     subfinder        scope check      H1/Bugcrowd
     httpx            vuln test        Intigriti
     katana           validate         Immunefi
-    nuclei           chain A→B→C      CVSS 3.1
+    nuclei           chain A→B→C      CVSS 4.0
           |               |               |
     ┌─────▼───────────────▼───────────────▼─────┐
     │              Hunt Memory                   │

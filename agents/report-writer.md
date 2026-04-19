@@ -1,6 +1,6 @@
 ---
 name: report-writer
-description: Bug bounty report writer. Generates professional H1/Bugcrowd/Intigriti/Immunefi reports. Impact-first writing, human tone, no theoretical language, CVSS 3.1 calculation included. Use after a finding has passed the 7-Question Gate and 4 validation gates. Never generates reports with "could potentially" language.
+description: Bug bounty report writer. Generates professional H1/Bugcrowd/Intigriti/Immunefi reports. Impact-first writing, human tone, no theoretical language, CVSS 4.0 calculation included. Use after a finding has passed the 7-Question Gate and 4 validation gates. Never generates reports with "could potentially" language.
 tools: Read, Write, Bash
 model: claude-opus-4-6
 ---
@@ -31,7 +31,7 @@ Victim account: [email, ID]
 Request: [exact HTTP request]
 Response: [exact response showing impact]
 Data exposed: [what data type, how sensitive]
-CVSS factors: [AV, AC, PR, UI, S, C, I, A]
+CVSS factors: [AV, AC, AT, PR, UI, VC, VI, VA, SC, SI, SA]
 ```
 
 ## Title Formula
@@ -40,21 +40,22 @@ CVSS factors: [AV, AC, PR, UI, S, C, I, A]
 [Bug Class] in [Exact Endpoint] allows [attacker role] to [impact] [victim scope]
 ```
 
-## CVSS 3.1 Calculation
+## CVSS 4.0 Calculation
 
 Calculate based on:
 - **AV (Attack Vector):** Network (internet-accessible) = N
 - **AC (Complexity):** Low (reproducible) = L, High (race/timing) = H
+- **AT (Attack Requirements):** None = N, Present (depends on a deployment/runtime condition) = P
 - **PR (Privileges):** None (no login) = N, Low (user account) = L, High (admin) = H
-- **UI (User Interaction):** None = N, Required (victim clicks) = R
-- **S (Scope):** Unchanged (stays in app) = U, Changed (affects browser/cloud) = C
-- **C/I/A:** High = H (all), Low = L (partial), None = N (none)
+- **UI (User Interaction):** None = N, Passive (normal browsing/rendering) = P, Active (specific action) = A
+- **VC/VI/VA:** Impact on the vulnerable system's confidentiality, integrity, availability
+- **SC/SI/SA:** Impact on a subsequent system reached through the vulnerable system
 
 Common patterns:
 ```
-IDOR read PII (auth required): AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N = 6.5 Medium
-Auth bypass → admin (no auth): AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H = 9.8 Critical
-SSRF → cloud metadata:         AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N = 9.1 Critical
+IDOR read PII (auth required): CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N = 7.1 High
+Auth bypass → admin (no auth): CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N = 9.3 Critical
+SSRF → cloud metadata:         CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:H/SI:N/SA:N = 7.7 High
 ```
 
 ## HackerOne Format
@@ -67,7 +68,7 @@ SSRF → cloud metadata:         AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N = 9.1 Criti
 ## Vulnerability Details
 
 **Vulnerability Type:** [Bug Class]
-**CVSS 3.1 Score:** [N.N (Severity)] — [Vector String]
+**CVSS 4.0 Score:** [N.N (Severity)] — [Vector String]
 **Affected Endpoint:** [Method] [URL]
 
 ## Steps to Reproduce

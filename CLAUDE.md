@@ -15,7 +15,7 @@ This repo is a Claude Code plugin for professional bug bounty hunting across Hac
 | `skills/security-arsenal/` | Payloads, bypass tables, gf patterns, always-rejected list |
 | `skills/web3-audit/` | 10 smart contract bug classes, Foundry PoC template, pre-dive kill signals |
 | `skills/meme-coin-audit/` | Meme coin rug pull detection, token authority checks, bonding curve exploits, LP attacks |
-| `skills/report-writing/` | H1/Bugcrowd/Intigriti/Immunefi report templates, CVSS 3.1, human tone |
+| `skills/report-writing/` | H1/Bugcrowd/Intigriti/Immunefi report templates, CVSS 4.0, human tone |
 | `skills/triage-validation/` | 7-Question Gate, 4 gates, never-submit list, conditionally valid table |
 
 ### Commands (core slash commands + `/resume` compatibility page)

@@ -1,5 +1,5 @@
 ---
-description: Write a submission-ready bug bounty report. Generates H1/Bugcrowd/Intigriti/Immunefi format with CVSS 3.1 score, proof of concept, impact statement, and remediation. Run /validate first. Usage: /report
+description: Write a submission-ready bug bounty report. Generates H1/Bugcrowd/Intigriti/Immunefi format with CVSS 4.0 score, proof of concept, impact statement, and remediation. Run /validate first. Usage: /report
 ---
 
 # /report
@@ -31,7 +31,7 @@ Provide when prompted:
 
 1. Title following the formula: `[Bug Class] in [Endpoint] allows [actor] to [impact]`
 2. Summary paragraph (impact-first, no "could potentially")
-3. Vulnerability details with CVSS 3.1 score and vector string
+3. Vulnerability details with CVSS 4.0 score and vector string
 4. Steps to Reproduce with copy-paste HTTP requests
 5. Impact statement with quantification
 6. Recommended fix (1-2 sentences, specific)
@@ -41,7 +41,7 @@ Provide when prompted:
 
 ### HackerOne Format
 - Markdown sections: Summary, Vulnerability Details, Steps to Reproduce, Impact, Recommended Fix
-- Include CVSS 3.1 score + vector string
+- Include CVSS 4.0 score + vector string
 - Include two test account setup instructions
 - Keep under 600 words
 
@@ -70,21 +70,21 @@ Provide when prompted:
 5. **Short:** triagers skim. < 600 words.
 6. **Human:** write to a person, not a system
 
-## CVSS 3.1 Calculation Guide
+## CVSS 4.0 Calculation Guide
 
 Common patterns:
 ```
 IDOR read PII (any user, auth needed):
-→ AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N = 6.5 Medium
+→ CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N = 7.1 High
 
 Auth bypass → admin (no auth):
-→ AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H = 9.8 Critical
+→ CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N = 9.3 Critical
 
 SSRF → cloud metadata:
-→ AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:N = 9.1 Critical
+→ CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:H/SI:N/SA:N = 7.7 High
 
-Stored XSS (any user, scope changed):
-→ AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:L/A:N = 8.2 High
+Stored XSS (any user, victim views page):
+→ CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:P/VC:L/VI:L/VA:N/SC:H/SI:L/SA:N = 6.2 Medium
 ```
 
 ## Escalation Language
@@ -106,7 +106,7 @@ Use when payout is being downgraded:
 [ ] HTTP request is copy-pasteable
 [ ] Response showing impact included
 [ ] Two accounts used (not self-testing)
-[ ] CVSS calculated and included
+[ ] CVSS 4.0 calculated and included
 [ ] Fix: 1-2 sentences
 [ ] No typos in endpoint/param names
 [ ] Under 600 words
