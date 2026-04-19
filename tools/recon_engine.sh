@@ -132,13 +132,14 @@ import sys
 network = ipaddress.ip_network(sys.argv[1], strict=False)
 output_path = sys.argv[2]
 limit = int(sys.argv[3])
-hosts = list(network.hosts())
-if len(hosts) > limit:
-    hosts = hosts[:limit]
+count = 0
 with open(output_path, "w", encoding="utf-8") as handle:
-    for host in hosts:
+    for host in network.hosts():
+        if count >= limit:
+            break
         handle.write(f"{host}\n")
-print(len(hosts))
+        count += 1
+print(count)
 PY
 )
     HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
@@ -155,29 +156,16 @@ if [ ! -s "$HTTPX_INPUT_FILE" ]; then
     log_warn "Discovery host list is empty — skipping downstream probing"
 elif command -v httpx &>/dev/null; then
     log_step "Probing with httpx (status, title, tech, content-length)..."
-    if [ "$TARGET_KIND" = "domain" ]; then
-        httpx -l "$RECON_DIR/subdomains/all.txt" \
-            -silent \
-            -status-code \
-            -title \
-            -tech-detect \
-            -content-length \
-            -follow-redirects \
-            -threads "$THREADS" \
-            -rate-limit "$RATE_LIMIT" \
-            -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null || true
-    else
-        httpx -l "$RECON_DIR/live/discovery_hosts.txt" \
-            -silent \
-            -status-code \
-            -title \
-            -tech-detect \
-            -content-length \
-            -follow-redirects \
-            -threads "$THREADS" \
-            -rate-limit "$RATE_LIMIT" \
-            -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null || true
-    fi
+    httpx -l "$HTTPX_INPUT_FILE" \
+        -silent \
+        -status-code \
+        -title \
+        -tech-detect \
+        -content-length \
+        -follow-redirects \
+        -threads "$THREADS" \
+        -rate-limit "$RATE_LIMIT" \
+        -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null || true
 
     # Extract just the URLs for other tools
     awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
@@ -206,17 +194,29 @@ echo ""
 log_info "Phase 3: Port Scanning"
 
 if command -v nmap &>/dev/null; then
-    log_step "Running nmap (top 1000 ports) on $TARGET..."
-    nmap -sV --top-ports 1000 -T4 --open "$TARGET" \
-        -oN "$RECON_DIR/ports/nmap_results.txt" \
-        -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
-    log_done "Nmap scan complete"
+    if [ "$TARGET_KIND" = "domain" ]; then
+        log_step "Running nmap (top 1000 ports) on $TARGET..."
+        nmap -sV --top-ports 1000 -T4 --open "$TARGET" \
+            -oN "$RECON_DIR/ports/nmap_results.txt" \
+            -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
+        log_done "Nmap scan complete"
+    elif [ -s "$DISCOVERY_HOSTS_FILE" ]; then
+        log_step "Running nmap (top 1000 ports) on discovery host list..."
+        nmap -sV --top-ports 1000 -T4 --open -iL "$DISCOVERY_HOSTS_FILE" \
+            -oN "$RECON_DIR/ports/nmap_results.txt" \
+            -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
+        log_done "Nmap scan complete"
+    else
+        log_warn "Discovery host list is empty — skipping port scan"
+    fi
 
-    # Extract open ports (macOS compatible - no grep -P)
-    grep "open" "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null \
-        | sed -nE 's/.*[^0-9]([0-9]+)\/open.*/\1\/open/p' \
-        | sort -u > "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || true
-    log_done "Open ports: $(wc -l < "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || echo 0)"
+    if [ -f "$RECON_DIR/ports/nmap_greppable.txt" ]; then
+        # Extract open ports (macOS compatible - no grep -P)
+        grep "open" "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null \
+            | sed -nE 's/.*[^0-9]([0-9]+)\/open.*/\1\/open/p' \
+            | sort -u > "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || true
+        log_done "Open ports: $(wc -l < "$RECON_DIR/ports/open_ports.txt" 2>/dev/null || echo 0)"
+    fi
 else
     log_warn "nmap not installed — skipping"
 fi
