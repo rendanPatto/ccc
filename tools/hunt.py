@@ -99,6 +99,14 @@ def log(level, msg):
     print(f"{colors.get(level, '')}{BOLD}[{symbols.get(level, '*')}]{NC} {msg}")
 
 
+def _log_legacy_path_hint(kind: str, preferred_command: str) -> None:
+    """输出低噪声提示，说明当前入口仅用于 legacy compatibility path。"""
+    log(
+        "info",
+        f"{kind} is using a legacy compatibility path; prefer {preferred_command} for the primary workflow.",
+    )
+
+
 def run_cmd(cmd, cwd=None, timeout=600):
     """Run a shell command and return (success, output)."""
     from runtime_exec import run_shell_command
@@ -1251,6 +1259,7 @@ def generate_reports(domain):
         return 0
 
     log("info", f"Generating reports for {domain}...")
+    _log_legacy_path_hint("Report generation", "/report")
     success, output = generate_legacy_reports(findings_dir, base_dir=BASE_DIR)
     print(output)
 
@@ -1355,6 +1364,7 @@ def print_dashboard(results):
 def run_cve_hunt(domain):
     """Run CVE hunter on a target."""
     log("info", f"Running CVE hunter on {domain}...")
+    _log_legacy_path_hint("CVE hunt", "/intel")
     recon_dir = _resolve_recon_dir(domain)
     success, _ = run_legacy_cve_hunt(
         domain,

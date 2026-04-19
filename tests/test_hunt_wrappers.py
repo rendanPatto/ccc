@@ -291,6 +291,19 @@ def test_run_cve_hunt_uses_legacy_bridge(monkeypatch, tmp_path):
     }
 
 
+def test_run_cve_hunt_compatibility_hint(monkeypatch, tmp_path, capsys):
+    domain = "example.com"
+    monkeypatch.setattr(hunt, "RECON_DIR", str(tmp_path / "recon"))
+    (tmp_path / "recon" / domain).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(hunt, "run_legacy_cve_hunt", lambda *args, **kwargs: (True, "ok"))
+
+    assert hunt.run_cve_hunt(domain) is True
+
+    output = capsys.readouterr().out.lower()
+    assert "legacy compatibility path" in output
+    assert "/intel" in output
+
+
 def test_generate_reports_uses_legacy_bridge(monkeypatch, tmp_path):
     domain = "example.com"
     monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
@@ -321,6 +334,25 @@ def test_generate_reports_uses_legacy_bridge(monkeypatch, tmp_path):
         "base_dir": hunt.BASE_DIR,
         "timeout": 600,
     }
+
+
+def test_generate_reports_compatibility_hint(monkeypatch, tmp_path, capsys):
+    domain = "example.com"
+    monkeypatch.setattr(hunt, "FINDINGS_DIR", str(tmp_path / "findings"))
+    monkeypatch.setattr(hunt, "REPORTS_DIR", str(tmp_path / "reports"))
+
+    findings_dir = Path(hunt._resolve_findings_dir(domain))
+    report_dir = Path(hunt._resolve_reports_dir(domain, create=True))
+    findings_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "compat.md").write_text("ok", encoding="utf-8")
+
+    monkeypatch.setattr(hunt, "generate_legacy_reports", lambda *args, **kwargs: (True, "generated"))
+
+    assert hunt.generate_reports(domain) == 1
+
+    output = capsys.readouterr().out.lower()
+    assert "legacy compatibility path" in output
+    assert "/report" in output
 
 
 def test_hunt_target_auto_logs_session_summary(monkeypatch, tmp_hunt_dir, tmp_path):
