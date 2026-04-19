@@ -26,17 +26,14 @@ def _append_message(stream: str, message: str) -> str:
     return stream + "\n" + message
 
 
-def _merge_streams(existing: str, new: str) -> str:
-    if not existing:
-        return new
-    if not new:
-        return existing
-
-    max_overlap = min(len(existing), len(new))
-    for overlap in range(max_overlap, 0, -1):
-        if existing.endswith(new[:overlap]):
-            return existing + new[overlap:]
+def _concat_streams(existing: str, new: str) -> str:
     return existing + new
+
+
+def _trim_replayed_prefix(partial: str, cleanup: str) -> str:
+    if partial and cleanup.startswith(partial):
+        return cleanup[len(partial) :]
+    return cleanup
 
 
 def _communicate_for(proc: subprocess.Popen[str], timeout: int | float) -> tuple[str, str, bool]:
@@ -47,6 +44,10 @@ def _communicate_for(proc: subprocess.Popen[str], timeout: int | float) -> tuple
         return _to_text(exc.output), _to_text(exc.stderr), False
     except Exception:
         return "", "", True
+
+
+def _merge_timeout_stream(partial: str, cleanup: str) -> str:
+    return _concat_streams(partial, _trim_replayed_prefix(partial, cleanup))
 
 
 def _terminate_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
@@ -70,7 +71,7 @@ def _terminate_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
         return stdout, stderr
 
     kill_stdout, kill_stderr, _finished = _communicate_for(proc, TERMINATION_GRACE_SECONDS)
-    return _merge_streams(stdout, kill_stdout), _merge_streams(stderr, kill_stderr)
+    return _merge_timeout_stream(stdout, kill_stdout), _merge_timeout_stream(stderr, kill_stderr)
 
 
 def _spawn(cmd: str, *, cwd: str | None = None) -> subprocess.Popen[str]:
@@ -99,16 +100,16 @@ def _run_shell_command_split(
         stdout = _to_text(exc.output)
         stderr = _to_text(exc.stderr)
         cleanup_stdout, cleanup_stderr = _terminate_process_group(proc)
-        stdout = _merge_streams(stdout, cleanup_stdout)
-        stderr = _merge_streams(stderr, cleanup_stderr)
+        stdout = _merge_timeout_stream(stdout, cleanup_stdout)
+        stderr = _merge_timeout_stream(stderr, cleanup_stderr)
         stderr = _append_message(stderr, f"Command timed out after {timeout}s")
         return False, stdout, stderr
     except Exception as exc:
         stdout = _to_text(getattr(exc, "output", None))
         stderr = _to_text(getattr(exc, "stderr", None))
         cleanup_stdout, cleanup_stderr = _terminate_process_group(proc)
-        stdout = _merge_streams(stdout, cleanup_stdout)
-        stderr = _merge_streams(stderr, cleanup_stderr)
+        stdout = _merge_timeout_stream(stdout, cleanup_stdout)
+        stderr = _merge_timeout_stream(stderr, cleanup_stderr)
         stderr = _append_message(stderr, str(exc))
         return False, stdout, stderr
 

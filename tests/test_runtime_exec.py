@@ -223,3 +223,16 @@ def test_run_shell_command_split_timeout_real_subprocess_does_not_duplicate_outp
     assert stdout == "hello\n"
     assert stderr.count("err\n") == 1
     assert "command timed out after 0.1s" in stderr.lower()
+
+
+
+def test_concat_streams_keeps_legitimate_repeated_output():
+    assert runtime_exec._concat_streams("aa", "aa") == "aaaa"
+    assert runtime_exec._concat_streams("hello\n", "hello\n") == "hello\nhello\n"
+
+
+
+def test_trim_replayed_prefix_only_strips_confirmed_duplicate_prefix():
+    assert runtime_exec._trim_replayed_prefix("hello\n", "hello\nworld\n") == "world\n"
+    assert runtime_exec._trim_replayed_prefix("abc", "bcd") == "bcd"
+    assert runtime_exec._trim_replayed_prefix("same", "same") == ""
