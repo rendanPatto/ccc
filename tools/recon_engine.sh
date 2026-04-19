@@ -24,16 +24,38 @@ log_vuln()  { echo -e "${RED}[VULN]${NC} $1"; }
 TARGET="${1:?Usage: $0 <target-domain> [--quick]}"
 QUICK_MODE="${2:-}"
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RECON_DIR="$BASE_DIR/recon/$TARGET"
+RECON_TARGET_KEY="${TARGET//\//_}"
+RECON_DIR="$BASE_DIR/recon/$RECON_TARGET_KEY"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 THREADS=20
 RATE_LIMIT=50  # requests per second
+DISCOVERY_HOSTS_FILE="$RECON_DIR/live/discovery_hosts.txt"
+HTTPX_INPUT_FILE="$RECON_DIR/subdomains/all.txt"
+TARGET_KIND="domain"
+if python3 - "$TARGET" <<'PY' >/dev/null 2>&1
+import ipaddress
+import sys
+ipaddress.ip_address(sys.argv[1])
+PY
+then
+    TARGET_KIND="ip"
+elif python3 - "$TARGET" <<'PY' >/dev/null 2>&1
+import ipaddress
+import sys
+network = ipaddress.ip_network(sys.argv[1], strict=False)
+print(network.num_addresses)
+PY
+then
+    TARGET_KIND="cidr"
+fi
 
 mkdir -p "$RECON_DIR"/{subdomains,live,ports,urls,js,dirs,params}
+: > "$DISCOVERY_HOSTS_FILE"
 
 echo "============================================="
 echo "  Recon Engine — $TARGET"
 echo "  Output: $RECON_DIR/"
+echo "  Target kind: $TARGET_KIND"
 echo "  Mode: $([ "$QUICK_MODE" = "--quick" ] && echo "Quick" || echo "Full")"
 echo "  Time: $(date)"
 echo "============================================="
@@ -44,30 +66,31 @@ echo ""
 # ============================================================
 log_info "Phase 1: Subdomain Enumeration"
 
-# Subfinder (passive, fast)
-if command -v subfinder &>/dev/null; then
-    log_step "Running subfinder..."
-    subfinder -d "$TARGET" -silent -all -o "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || true
-    log_done "subfinder: $(wc -l < "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || echo 0) subdomains"
-else
-    log_warn "subfinder not installed — skipping"
-fi
+if [ "$TARGET_KIND" = "domain" ]; then
+    # Subfinder (passive, fast)
+    if command -v subfinder &>/dev/null; then
+        log_step "Running subfinder..."
+        subfinder -d "$TARGET" -silent -all -o "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || true
+        log_done "subfinder: $(wc -l < "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || echo 0) subdomains"
+    else
+        log_warn "subfinder not installed — skipping"
+    fi
 
-# Amass (passive)
-if command -v amass &>/dev/null && [ "$QUICK_MODE" != "--quick" ]; then
-    log_step "Running amass (passive, 5min timeout)..."
-    timeout 300 amass enum -passive -d "$TARGET" -o "$RECON_DIR/subdomains/amass.txt" 2>/dev/null || true
-    # Ensure amass output file exists even if amass failed
-    [ ! -f "$RECON_DIR/subdomains/amass.txt" ] && touch "$RECON_DIR/subdomains/amass.txt"
-    log_done "amass: $(wc -l < "$RECON_DIR/subdomains/amass.txt" 2>/dev/null || echo 0) subdomains"
-else
-    [ "$QUICK_MODE" = "--quick" ] && log_warn "Skipping amass (quick mode)"
-fi
+    # Amass (passive)
+    if command -v amass &>/dev/null && [ "$QUICK_MODE" != "--quick" ]; then
+        log_step "Running amass (passive, 5min timeout)..."
+        timeout 300 amass enum -passive -d "$TARGET" -o "$RECON_DIR/subdomains/amass.txt" 2>/dev/null || true
+        # Ensure amass output file exists even if amass failed
+        [ ! -f "$RECON_DIR/subdomains/amass.txt" ] && touch "$RECON_DIR/subdomains/amass.txt"
+        log_done "amass: $(wc -l < "$RECON_DIR/subdomains/amass.txt" 2>/dev/null || echo 0) subdomains"
+    else
+        [ "$QUICK_MODE" = "--quick" ] && log_warn "Skipping amass (quick mode)"
+    fi
 
-# crt.sh (certificate transparency)
-log_step "Querying crt.sh..."
-curl -s "https://crt.sh/?q=%25.$TARGET&output=json" 2>/dev/null \
-    | python3 -c "
+    # crt.sh (certificate transparency)
+    log_step "Querying crt.sh..."
+    curl -s "https://crt.sh/?q=%25.$TARGET&output=json" 2>/dev/null \
+        | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -83,19 +106,44 @@ try:
         print(n)
 except: pass
 " > "$RECON_DIR/subdomains/crtsh.txt" 2>/dev/null || true
-log_done "crt.sh: $(wc -l < "$RECON_DIR/subdomains/crtsh.txt" 2>/dev/null || echo 0) subdomains"
+    log_done "crt.sh: $(wc -l < "$RECON_DIR/subdomains/crtsh.txt" 2>/dev/null || echo 0) subdomains"
 
-# Wayback subdomains
-log_step "Querying Wayback Machine for subdomains..."
-curl -s "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey" 2>/dev/null \
-    | sed -nE "s|.*://([a-zA-Z0-9._-]+\.$TARGET).*|\1|p" \
-    | sort -u > "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || true
-log_done "wayback: $(wc -l < "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || echo 0) subdomains"
+    # Wayback subdomains
+    log_step "Querying Wayback Machine for subdomains..."
+    curl -s "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey" 2>/dev/null \
+        | sed -nE "s|.*://([a-zA-Z0-9._-]+\.$TARGET).*|\1|p" \
+        | sort -u > "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || true
+    log_done "wayback: $(wc -l < "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || echo 0) subdomains"
 
-# Merge and deduplicate all subdomains
-cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt" || true
-TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
-log_ok "Total unique subdomains: $TOTAL_SUBS"
+    # Merge and deduplicate all subdomains
+    cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt" || true
+    TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt" 2>/dev/null || echo 0)
+    log_ok "Total unique subdomains: $TOTAL_SUBS"
+elif [ "$TARGET_KIND" = "ip" ]; then
+    printf '%s\n' "$TARGET" > "$DISCOVERY_HOSTS_FILE"
+    HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
+    log_ok "IP target prepared for probing: 1 host"
+else
+    CIDR_LIMIT=4096
+    CIDR_COUNT=$(python3 - "$TARGET" "$DISCOVERY_HOSTS_FILE" "$CIDR_LIMIT" <<'PY'
+import ipaddress
+import sys
+
+network = ipaddress.ip_network(sys.argv[1], strict=False)
+output_path = sys.argv[2]
+limit = int(sys.argv[3])
+hosts = list(network.hosts())
+if len(hosts) > limit:
+    hosts = hosts[:limit]
+with open(output_path, "w", encoding="utf-8") as handle:
+    for host in hosts:
+        handle.write(f"{host}\n")
+print(len(hosts))
+PY
+)
+    HTTPX_INPUT_FILE="$DISCOVERY_HOSTS_FILE"
+    log_ok "CIDR candidates prepared: $CIDR_COUNT hosts"
+fi
 
 # ============================================================
 # Phase 2: HTTP Probing
@@ -103,18 +151,33 @@ log_ok "Total unique subdomains: $TOTAL_SUBS"
 echo ""
 log_info "Phase 2: HTTP Probing"
 
-if command -v httpx &>/dev/null && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
+if [ ! -s "$HTTPX_INPUT_FILE" ]; then
+    log_warn "Discovery host list is empty — skipping downstream probing"
+elif command -v httpx &>/dev/null; then
     log_step "Probing with httpx (status, title, tech, content-length)..."
-    httpx -l "$RECON_DIR/subdomains/all.txt" \
-        -silent \
-        -status-code \
-        -title \
-        -tech-detect \
-        -content-length \
-        -follow-redirects \
-        -threads "$THREADS" \
-        -rate-limit "$RATE_LIMIT" \
-        -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null || true
+    if [ "$TARGET_KIND" = "domain" ]; then
+        httpx -l "$RECON_DIR/subdomains/all.txt" \
+            -silent \
+            -status-code \
+            -title \
+            -tech-detect \
+            -content-length \
+            -follow-redirects \
+            -threads "$THREADS" \
+            -rate-limit "$RATE_LIMIT" \
+            -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null || true
+    else
+        httpx -l "$RECON_DIR/live/discovery_hosts.txt" \
+            -silent \
+            -status-code \
+            -title \
+            -tech-detect \
+            -content-length \
+            -follow-redirects \
+            -threads "$THREADS" \
+            -rate-limit "$RATE_LIMIT" \
+            -o "$RECON_DIR/live/httpx_full.txt" 2>/dev/null || true
+    fi
 
     # Extract just the URLs for other tools
     awk '{print $1}' "$RECON_DIR/live/httpx_full.txt" > "$RECON_DIR/live/urls.txt" 2>/dev/null || true
@@ -133,7 +196,7 @@ if command -v httpx &>/dev/null && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
     log_done "403 Forbidden: $(wc -l < "$RECON_DIR/live/status_403.txt" 2>/dev/null || echo 0)"
     log_done "401 Auth Required: $(wc -l < "$RECON_DIR/live/status_401.txt" 2>/dev/null || echo 0)"
 else
-    log_warn "httpx not installed or no subdomains found — skipping"
+    log_warn "httpx not installed — skipping"
 fi
 
 # ============================================================

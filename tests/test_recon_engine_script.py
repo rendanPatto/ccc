@@ -8,6 +8,10 @@ def test_recon_engine_guards_common_set_e_pitfalls():
     text = script.read_text(encoding="utf-8")
 
     assert "log_vuln()" in text
+    assert 'TARGET_KIND="domain"' in text
+    assert 'TARGET_KIND="ip"' in text
+    assert 'TARGET_KIND="cidr"' in text
     assert 'cat "$RECON_DIR/subdomains/"*.txt 2>/dev/null | sort -u > "$RECON_DIR/subdomains/all.txt" || true' in text
+    assert 'httpx -l "$RECON_DIR/live/discovery_hosts.txt"' in text
     assert 'FUZZ_COUNT=$((FUZZ_COUNT + 1))' in text
     assert 'CONTENT_TYPE=$(curl -sI --max-time 5 "${base_url}${path}" 2>/dev/null | grep -i content-type | head -1 || true)' in text
