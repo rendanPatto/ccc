@@ -1,25 +1,71 @@
 """Tests for CVSS 4.0 scoring in validate.py."""
 
+import pytest
+
 import validate
 
 
-def test_calculate_cvss4_returns_cvss4_vector_prefix():
-    score, vector = validate.calculate_cvss4(
-        av="N",
-        ac="L",
-        at="N",
-        pr="N",
-        ui="N",
-        vc="H",
-        vi="H",
-        va="H",
-        sc="H",
-        si="H",
-        sa="H",
-    )
+@pytest.mark.parametrize(
+    ("params", "expected_score", "expected_vector"),
+    [
+        (
+            {
+                "av": "L",
+                "ac": "L",
+                "at": "N",
+                "pr": "L",
+                "ui": "N",
+                "vc": "H",
+                "vi": "N",
+                "va": "N",
+                "sc": "N",
+                "si": "N",
+                "sa": "N",
+            },
+            6.8,
+            "CVSS:4.0/AV:L/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+        ),
+        (
+            {
+                "av": "N",
+                "ac": "L",
+                "at": "N",
+                "pr": "H",
+                "ui": "N",
+                "vc": "H",
+                "vi": "N",
+                "va": "N",
+                "sc": "N",
+                "si": "N",
+                "sa": "N",
+            },
+            6.9,
+            "CVSS:4.0/AV:N/AC:L/AT:N/PR:H/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+        ),
+        (
+            {
+                "av": "N",
+                "ac": "L",
+                "at": "N",
+                "pr": "N",
+                "ui": "N",
+                "vc": "H",
+                "vi": "H",
+                "va": "H",
+                "sc": "N",
+                "si": "N",
+                "sa": "N",
+            },
+            9.3,
+            "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+        ),
+    ],
+)
+def test_calculate_cvss4_matches_first_official_examples(params, expected_score, expected_vector):
+    score, vector = validate.calculate_cvss4(**params)
 
-    assert isinstance(score, float)
-    assert vector.startswith("CVSS:4.0/")
+    assert score == expected_score
+    assert vector == expected_vector
 
 
 def test_severity_from_score_cvss4_thresholds():
