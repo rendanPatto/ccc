@@ -5,12 +5,10 @@ Validates URLs against an allowlist of domain patterns before any outbound reque
 Uses anchored suffix matching (not raw fnmatch) to prevent subdomain confusion:
   - "*.target.com" matches "sub.target.com" but NOT "evil-target.com"
   - "target.com" matches exactly "target.com"
-
-Known limitation: IP addresses and CIDR ranges are NOT supported (returns False + warning).
 """
 
+import ipaddress
 import sys
-from fnmatch import fnmatch
 from urllib.parse import urlparse
 
 
@@ -41,7 +39,7 @@ class ScopeChecker:
 
         Returns:
             True if the hostname matches an allowed pattern and is not excluded.
-            False otherwise (including for malformed URLs, empty input, IP addresses).
+            False otherwise (including for malformed URLs and empty input).
         """
         if self.unrestricted:
             return bool(url and isinstance(url, str))
@@ -63,12 +61,17 @@ class ScopeChecker:
 
         hostname = hostname.lower()
 
-        # IP address check — not supported, return False with warning
-        if _is_ip(hostname):
-            print(
-                f"WARNING: scope checker does not support IP addresses: {hostname}",
-                file=sys.stderr,
-            )
+        ip = _parse_ip(hostname)
+
+        if ip is not None:
+            for excluded in self.excluded_domains:
+                if _ip_matches(ip, excluded):
+                    return False
+
+            for pattern in self.domains:
+                if _ip_matches(ip, pattern):
+                    return True
+
             return False
 
         # Strip port if present (urlparse handles this, but be safe)
@@ -148,16 +151,22 @@ def _domain_matches(hostname: str, pattern: str) -> bool:
         return hostname == pattern
 
 
-def _is_ip(hostname: str) -> bool:
-    """Check if hostname looks like an IP address (v4 or v6)."""
-    # IPv6 in brackets
-    if hostname.startswith("[") or ":" in hostname:
-        return True
-    # IPv4
-    parts = hostname.split(".")
-    if len(parts) == 4:
-        try:
-            return all(0 <= int(p) <= 255 for p in parts)
-        except ValueError:
-            return False
-    return False
+def _parse_ip(hostname: str) -> ipaddress._BaseAddress | None:
+    """Parse an IPv4/IPv6 hostname, returning None for non-IP hostnames."""
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        return None
+
+
+def _ip_matches(ip: ipaddress._BaseAddress, pattern: str) -> bool:
+    """Match an IP against an exact-IP or CIDR allow/block entry."""
+    try:
+        return ip == ipaddress.ip_address(pattern)
+    except ValueError:
+        pass
+
+    try:
+        return ip in ipaddress.ip_network(pattern, strict=False)
+    except ValueError:
+        return False

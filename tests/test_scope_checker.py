@@ -76,10 +76,6 @@ class TestEdgeCases:
         sc = ScopeChecker(scope_domains, scope_excluded)
         assert sc.is_in_scope("://broken") is False
 
-    def test_ip_address_returns_false(self, scope_domains, scope_excluded):
-        sc = ScopeChecker(scope_domains, scope_excluded)
-        assert sc.is_in_scope("https://192.168.1.1/admin") is False
-
     def test_ipv6_returns_false(self, scope_domains, scope_excluded):
         sc = ScopeChecker(scope_domains, scope_excluded)
         assert sc.is_in_scope("https://[::1]/admin") is False
@@ -101,6 +97,22 @@ class TestEdgeCases:
     def test_url_with_path_only(self):
         sc = ScopeChecker(["target.com"])
         assert sc.is_in_scope("/just/a/path") is False
+
+
+class TestIpAndCidrScope:
+
+    def test_exact_ip_in_allowlist_matches_same_ip(self):
+        sc = ScopeChecker(["1.2.3.4"])
+        assert sc.is_in_scope("https://1.2.3.4/login") is True
+
+    def test_cidr_in_allowlist_matches_ip_in_range(self):
+        sc = ScopeChecker(["10.10.10.0/24"])
+        assert sc.is_in_scope("https://10.10.10.25/api") is True
+
+    def test_domain_matching_still_uses_existing_behavior(self):
+        sc = ScopeChecker(["*.target.com", "target.com"])
+        assert sc.is_in_scope("https://sub.target.com/path") is True
+        assert sc.is_in_scope("https://evil-target.com") is False
 
 
 class TestVulnClassFiltering:
