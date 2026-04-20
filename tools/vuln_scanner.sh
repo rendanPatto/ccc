@@ -396,6 +396,31 @@ if [ -s "$LIVE_URLS" ]; then
     [ "$METHOD_COUNT" -gt 0 ] && log_warn "Method tampering findings: $METHOD_COUNT (manual verification needed)" || log_done "Method tampering: clean"
 fi
 
+# 8f: Auth flow review candidates — low-noise passive keyword matching only
+log_step "Flagging auth-flow review candidates (MFA / SAML / SSO)..."
+AUTH_FLOW_REVIEW="$FINDINGS_DIR/manual_review/auth_flow_review.txt"
+: > "$AUTH_FLOW_REVIEW"
+
+for candidate_file in \
+    "$PARAM_URLS" \
+    "$ALL_URLS" \
+    "$RECON_DIR/urls/api_endpoints.txt" \
+    "$RECON_DIR/params/interesting_params.txt"
+do
+    [ -s "$candidate_file" ] || continue
+    grep -iE 'mfa|2fa|otp|totp|saml|sso|relaystate|samlrequest|samlresponse' \
+        "$candidate_file" >> "$AUTH_FLOW_REVIEW" 2>/dev/null || true
+done
+
+if [ -s "$AUTH_FLOW_REVIEW" ]; then
+    sort -u "$AUTH_FLOW_REVIEW" -o "$AUTH_FLOW_REVIEW"
+    AUTH_FLOW_COUNT=$(count_findings "$AUTH_FLOW_REVIEW")
+    log_warn "Auth-flow review candidates: $AUTH_FLOW_COUNT (manual MFA/SAML review recommended)"
+else
+    rm -f "$AUTH_FLOW_REVIEW"
+    log_done "Auth-flow review candidates: none found"
+fi
+
 # ============================================================
 # Consolidate Findings
 # ============================================================
