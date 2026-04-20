@@ -31,3 +31,4 @@ venv/
 nmap-output/
 .ace-tool/
 .worktrees/
+hunt-memory/
